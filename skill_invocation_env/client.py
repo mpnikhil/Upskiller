@@ -20,7 +20,7 @@ class SkillInvocationEnv(
         ...     result = client.reset()
         ...     print(result.observation.task_description)
         ...     result = client.step(SkillInvocationAction(
-        ...         action_type="invoke", skill_id="skill_001"
+        ...         action_type="load", skill_id="skill_001"
         ...     ))
         ...     print(result.observation.skill_content[:100])
     """
@@ -41,6 +41,10 @@ class SkillInvocationEnv(
             task_description=obs_data.get("task_description", ""),
             skill_catalog=obs_data.get("skill_catalog", []),
             difficulty=obs_data.get("difficulty", "easy"),
+            loaded_skills=obs_data.get("loaded_skills", []),
+            loaded_skill_contents=obs_data.get("loaded_skill_contents", {}),
+            context_budget_used=obs_data.get("context_budget_used", 0),
+            context_budget_total=obs_data.get("context_budget_total", 5),
             skill_content=obs_data.get("skill_content"),
             remaining_invocations=obs_data.get("remaining_invocations", 0),
             verification_result=obs_data.get("verification_result"),
@@ -63,8 +67,11 @@ class SkillInvocationEnv(
             episode_id=payload.get("episode_id"),
             step_count=payload.get("step_count", 0),
             task_id=payload.get("task_id", ""),
+            loaded_skills=payload.get("loaded_skills", []),
+            skills_ever_loaded=payload.get("skills_ever_loaded", []),
             skills_invoked=payload.get("skills_invoked", []),
             difficulty=payload.get("difficulty", "easy"),
             done=payload.get("done", False),
-            remaining_invocations=payload.get("remaining_invocations", 3),
+            context_budget_total=payload.get("context_budget_total", 5),
+            remaining_invocations=payload.get("remaining_invocations", 5),
         )

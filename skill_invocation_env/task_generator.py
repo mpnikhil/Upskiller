@@ -113,6 +113,51 @@ _DISTRACTOR_SKILLS = [
             "Retry policies: max 3 retries with exponential backoff, only on 5xx errors."
         ),
     },
+    {
+        "id": "skill_proc_dist_005",
+        "name": "OAuth2 Token Exchange",
+        "short_description": "OAuth2 authorization code flow, token refresh, and scope management.",
+        "full_content": (
+            "# OAuth2 Token Exchange\n\n"
+            "1. Redirect user to /authorize with client_id and scope.\n"
+            "2. Exchange authorization code for access token via POST /token.\n"
+            "3. Refresh expired tokens using refresh_token grant type.\n"
+            "4. Validate scopes on each API call."
+        ),
+    },
+    {
+        "id": "skill_proc_dist_006",
+        "name": "Database Connection Pooling",
+        "short_description": "Connection pool sizing, timeout strategies, and health check configuration.",
+        "full_content": (
+            "# Database Connection Pooling\n\n"
+            "Set pool size to 2x CPU cores. Use 30s idle timeout.\n"
+            "Enable health checks with SELECT 1 every 10s.\n"
+            "Use connection validation on borrow, not on return."
+        ),
+    },
+    {
+        "id": "skill_proc_dist_007",
+        "name": "Message Queue Patterns",
+        "short_description": "Pub/sub, fan-out, and dead letter queue patterns for async messaging.",
+        "full_content": (
+            "# Message Queue Patterns\n\n"
+            "## Pub/Sub\nPublish to topic, multiple subscribers receive copies.\n"
+            "## Fan-Out\nSingle message routed to N queues for parallel processing.\n"
+            "## Dead Letter\nFailed messages after max retries sent to DLQ for inspection."
+        ),
+    },
+    {
+        "id": "skill_proc_dist_008",
+        "name": "TLS Certificate Management",
+        "short_description": "Certificate rotation, chain validation, and pinning strategies.",
+        "full_content": (
+            "# TLS Certificate Management\n\n"
+            "Rotate certificates 30 days before expiry. Validate full chain including "
+            "intermediates. Use certificate pinning for mobile clients. "
+            "Store private keys in HSM or KMS, never on disk."
+        ),
+    },
 ]
 
 
@@ -338,8 +383,9 @@ def _gen_auth_protocol(rng: random.Random, seed: int) -> dict:
         "full_content": skill_content,
     }
 
-    # Pick 2 distractor skills
-    distractor_ids = [d["id"] for d in rng.sample(_DISTRACTOR_SKILLS, 2)]
+    # Pick 4-6 distractor skills
+    n_distractors = rng.randint(4, min(6, len(_DISTRACTOR_SKILLS)))
+    distractor_ids = [d["id"] for d in rng.sample(_DISTRACTOR_SKILLS, n_distractors)]
 
     task = {
         "id": f"task_proc_auth_{seed}",
@@ -550,7 +596,8 @@ def _gen_binary_format(rng: random.Random, seed: int) -> dict:
         "full_content": skill_content,
     }
 
-    distractor_ids = [d["id"] for d in rng.sample(_DISTRACTOR_SKILLS, 2)]
+    n_distractors = rng.randint(4, min(6, len(_DISTRACTOR_SKILLS)))
+    distractor_ids = [d["id"] for d in rng.sample(_DISTRACTOR_SKILLS, n_distractors)]
 
     task = {
         "id": f"task_proc_bin_{seed}",

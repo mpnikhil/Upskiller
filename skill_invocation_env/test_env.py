@@ -4,9 +4,10 @@ Local test script for the Skill Invocation Environment.
 
 Tests the environment directly (no server) to verify:
 - reset() works and returns proper observation
-- invoke action returns skill content
-- submit action computes rewards correctly
-- edge cases (unknown skills, exhausted invocations, etc.)
+- list/load/unload/submit actions work correctly
+- context budget enforcement
+- precision/recall/bloat reward computation
+- verifier tests for static and procedural tasks
 """
 
 import sys
@@ -21,6 +22,11 @@ from server.skill_invocation_env_environment import SkillInvocationEnvironment
 from task_generator import TaskGenerator
 
 
+# ---------------------------------------------------------------------------
+# Core environment tests
+# ---------------------------------------------------------------------------
+
+
 def test_reset():
     """Test that reset returns a valid observation."""
     env = SkillInvocationEnvironment()
@@ -28,73 +34,155 @@ def test_reset():
 
     assert isinstance(obs, SkillInvocationObservation)
     assert obs.task_description != ""
-    assert len(obs.skill_catalog) >= 3  # relevant + distractors
-    assert obs.remaining_invocations == 3
+    assert len(obs.skill_catalog) >= 5  # relevant + distractors (now 5-8)
     assert obs.done is False
     assert obs.reward == 0.0
     assert obs.skill_content is None
-    assert obs.skills_invoked == []
+    assert obs.loaded_skills == []
+    assert obs.context_budget_used == 0
+    assert obs.context_budget_total == 5
     assert len(obs.messages) > 0
 
     print("[PASS] test_reset")
 
 
-def test_invoke_skill():
-    """Test invoking a valid skill returns full content."""
+def test_list_action():
+    """Test that list action returns catalog without state change."""
     env = SkillInvocationEnvironment()
     obs = env.reset(seed=42)
 
-    # Get a skill from the catalog
+    action = SkillInvocationAction(action_type="list")
+    obs2 = env.step(action)
+
+    assert obs2.skill_content is None
+    assert len(obs2.skill_catalog) == len(obs.skill_catalog)
+    assert obs2.loaded_skills == []
+    assert obs2.context_budget_used == 0
+    assert obs2.done is False
+
+    print("[PASS] test_list_action")
+
+
+def test_load_skill():
+    """Test loading a skill puts it in context."""
+    env = SkillInvocationEnvironment()
+    obs = env.reset(seed=42)
+
+    skill_id = obs.skill_catalog[0]["id"]
+    action = SkillInvocationAction(action_type="load", skill_id=skill_id)
+    obs2 = env.step(action)
+
+    assert obs2.skill_content is not None
+    assert len(obs2.skill_content) > 0
+    assert skill_id in obs2.loaded_skills
+    assert obs2.context_budget_used == 1
+    assert skill_id in obs2.loaded_skill_contents
+    assert obs2.done is False
+
+    print("[PASS] test_load_skill")
+
+
+def test_invoke_backward_compat():
+    """Test that 'invoke' still works as alias for 'load'."""
+    env = SkillInvocationEnvironment()
+    obs = env.reset(seed=42)
+
     skill_id = obs.skill_catalog[0]["id"]
     action = SkillInvocationAction(action_type="invoke", skill_id=skill_id)
     obs2 = env.step(action)
 
     assert obs2.skill_content is not None
-    assert len(obs2.skill_content) > 0
-    assert obs2.remaining_invocations == 2
-    assert skill_id in obs2.skills_invoked
-    assert obs2.done is False
-    assert obs2.reward == 0.0
+    assert skill_id in obs2.loaded_skills
+    assert obs2.context_budget_used == 1
 
-    print("[PASS] test_invoke_skill")
+    print("[PASS] test_invoke_backward_compat")
 
 
-def test_invoke_unknown_skill():
-    """Test invoking a skill not in the catalog."""
+def test_unload_skill():
+    """Test unloading a skill removes it from context."""
+    env = SkillInvocationEnvironment()
+    obs = env.reset(seed=42)
+
+    skill_id = obs.skill_catalog[0]["id"]
+
+    # Load
+    env.step(SkillInvocationAction(action_type="load", skill_id=skill_id))
+    # Unload
+    obs3 = env.step(SkillInvocationAction(action_type="unload", skill_id=skill_id))
+
+    assert skill_id not in obs3.loaded_skills
+    assert obs3.context_budget_used == 0
+    assert obs3.skill_content is None
+    # Should still be in skills_ever_loaded (history)
+    assert skill_id in obs3.skills_invoked
+
+    print("[PASS] test_unload_skill")
+
+
+def test_load_already_loaded():
+    """Loading same skill twice is a no-op (no double counting)."""
+    env = SkillInvocationEnvironment()
+    obs = env.reset(seed=42)
+
+    skill_id = obs.skill_catalog[0]["id"]
+    env.step(SkillInvocationAction(action_type="load", skill_id=skill_id))
+    obs2 = env.step(SkillInvocationAction(action_type="load", skill_id=skill_id))
+
+    assert obs2.context_budget_used == 1  # Not 2
+    assert obs2.loaded_skills.count(skill_id) == 1
+    assert obs2.skill_content is not None  # Still returns content
+
+    print("[PASS] test_load_already_loaded")
+
+
+def test_unload_not_loaded():
+    """Unloading a skill that isn't loaded is a no-op."""
     env = SkillInvocationEnvironment()
     env.reset(seed=42)
 
-    action = SkillInvocationAction(action_type="invoke", skill_id="skill_999")
-    obs = env.step(action)
+    obs = env.step(SkillInvocationAction(action_type="unload", skill_id="skill_001"))
+    assert obs.context_budget_used == 0
 
-    assert obs.skill_content is None
-    assert obs.remaining_invocations == 3  # Not decremented
-
-    print("[PASS] test_invoke_unknown_skill")
+    print("[PASS] test_unload_not_loaded")
 
 
-def test_exhausted_invocations():
-    """Test that invocations are limited."""
-    env = SkillInvocationEnvironment()
+def test_context_budget():
+    """Test that context budget is enforced."""
+    env = SkillInvocationEnvironment(context_budget=3)
     obs = env.reset(seed=42)
 
     catalog_ids = [s["id"] for s in obs.skill_catalog]
 
-    # Use up all 3 invocations
-    for i in range(3):
-        idx = i % len(catalog_ids)
-        action = SkillInvocationAction(action_type="invoke", skill_id=catalog_ids[idx])
-        obs = env.step(action)
+    # Load 3 skills (budget full)
+    for i in range(min(3, len(catalog_ids))):
+        env.step(SkillInvocationAction(action_type="load", skill_id=catalog_ids[i]))
 
-    assert obs.remaining_invocations == 0
+    obs = env.step(SkillInvocationAction(action_type="load", skill_id=catalog_ids[3]))
+    # Should fail — budget is full
+    assert obs.context_budget_used == 3
+    assert catalog_ids[3] not in obs.loaded_skills
 
-    # 4th invocation should fail gracefully
-    action = SkillInvocationAction(action_type="invoke", skill_id=catalog_ids[0])
+    # Unload one, then load should work
+    env.step(SkillInvocationAction(action_type="unload", skill_id=catalog_ids[0]))
+    obs2 = env.step(SkillInvocationAction(action_type="load", skill_id=catalog_ids[3]))
+    assert catalog_ids[3] in obs2.loaded_skills
+    assert obs2.context_budget_used == 3
+
+    print("[PASS] test_context_budget")
+
+
+def test_load_unknown_skill():
+    """Test loading a skill not in the catalog."""
+    env = SkillInvocationEnvironment()
+    env.reset(seed=42)
+
+    action = SkillInvocationAction(action_type="load", skill_id="skill_999")
     obs = env.step(action)
-    assert obs.skill_content is None
-    assert obs.remaining_invocations == 0
 
-    print("[PASS] test_exhausted_invocations")
+    assert obs.skill_content is None
+    assert obs.context_budget_used == 0
+
+    print("[PASS] test_load_unknown_skill")
 
 
 def test_submit_incorrect():
@@ -106,7 +194,7 @@ def test_submit_incorrect():
     obs = env.step(action)
 
     assert obs.done is True
-    assert obs.reward <= 0.0  # No correctness reward
+    assert obs.reward <= 0.0
     assert obs.verification_result is not None
     assert "INCORRECT" in obs.verification_result
 
@@ -118,38 +206,30 @@ def test_submit_after_done():
     env = SkillInvocationEnvironment()
     env.reset(seed=42)
 
-    # Submit
-    action = SkillInvocationAction(action_type="submit", answer="test")
-    env.step(action)
+    env.step(SkillInvocationAction(action_type="submit", answer="test"))
 
-    # Try another action
-    action2 = SkillInvocationAction(action_type="invoke", skill_id="skill_001")
-    obs = env.step(action2)
+    obs = env.step(SkillInvocationAction(action_type="load", skill_id="skill_001"))
     assert obs.done is True
 
     print("[PASS] test_submit_after_done")
 
 
-def test_correct_submission_task_001():
-    """Test a correct answer for task_001 (Zephyr-3 auth)."""
+def test_precision_reward():
+    """Load only relevant skill, submit correct answer → max reward 1.0."""
     env = SkillInvocationEnvironment()
 
-    # Find task_001 by resetting with different seeds until we get it
     for seed in range(100):
         obs = env.reset(seed=seed)
         state = env.state
         if state.task_id == "task_001":
             break
     else:
-        print("[SKIP] test_correct_submission_task_001 - couldn't find task")
+        print("[SKIP] test_precision_reward - couldn't find task_001")
         return
 
-    # Invoke the relevant skill
-    action = SkillInvocationAction(action_type="invoke", skill_id="skill_001")
-    obs = env.step(action)
-    assert obs.skill_content is not None
+    # Load only relevant skill
+    env.step(SkillInvocationAction(action_type="load", skill_id="skill_001"))
 
-    # Submit a correct-ish answer that passes the verifier
     correct_answer = """
 import hmac, hashlib, base64
 
@@ -159,41 +239,33 @@ def encode_zephyr_auth(api_key: str, timestamp: int) -> dict:
     b64 = base64.b64encode(digest).decode()
     return {"X-Zephyr-Auth": f"ZPH {api_key}:{b64}:{timestamp}"}
 """
-    action = SkillInvocationAction(action_type="submit", answer=correct_answer)
-    obs = env.step(action)
+    obs = env.step(SkillInvocationAction(action_type="submit", answer=correct_answer))
 
     assert obs.done is True
     assert "CORRECT" in obs.verification_result
-    assert obs.reward > 0.0
-    # Should get: 0.7 (correct) + 0.2 (invoked relevant skill) = 0.9
-    assert obs.reward >= 0.89, f"Expected reward >= 0.89, got {obs.reward}"
+    # 0.6 correctness + 0.3 precision (1/1) + 0.1 recall (1/1) = 1.0
+    assert abs(obs.reward - 1.0) < 0.01, f"Expected ~1.0, got {obs.reward}"
 
-    print(f"[PASS] test_correct_submission_task_001 (reward={obs.reward})")
+    print(f"[PASS] test_precision_reward (reward={obs.reward})")
 
 
-def test_distractor_penalty():
-    """Test that invoking distractors reduces reward."""
+def test_bloat_penalty():
+    """Load all catalog skills, submit correct answer → reduced reward."""
     env = SkillInvocationEnvironment()
 
-    # Find task_001
     for seed in range(100):
         obs = env.reset(seed=seed)
         state = env.state
         if state.task_id == "task_001":
             break
     else:
-        print("[SKIP] test_distractor_penalty - couldn't find task")
+        print("[SKIP] test_bloat_penalty - couldn't find task_001")
         return
 
-    # Invoke a distractor
-    action = SkillInvocationAction(action_type="invoke", skill_id="skill_002")
-    env.step(action)
+    # Load all catalog skills (relevant + distractors)
+    for skill in obs.skill_catalog:
+        env.step(SkillInvocationAction(action_type="load", skill_id=skill["id"]))
 
-    # Invoke the relevant skill too
-    action = SkillInvocationAction(action_type="invoke", skill_id="skill_001")
-    env.step(action)
-
-    # Submit correct answer
     correct_answer = """
 import hmac, hashlib, base64
 
@@ -203,14 +275,63 @@ def encode_zephyr_auth(api_key: str, timestamp: int) -> dict:
     b64 = base64.b64encode(digest).decode()
     return {"X-Zephyr-Auth": f"ZPH {api_key}:{b64}:{timestamp}"}
 """
-    action = SkillInvocationAction(action_type="submit", answer=correct_answer)
-    obs = env.step(action)
+    obs = env.step(SkillInvocationAction(action_type="submit", answer=correct_answer))
 
-    # Should get: 0.7 (correct) + 0.2 (relevant) - 0.1 (distractor) = 0.8
-    assert obs.reward < 0.9, f"Expected reward < 0.9 due to distractor, got {obs.reward}"
-    assert obs.reward >= 0.7, f"Expected reward >= 0.7, got {obs.reward}"
+    assert obs.done is True
+    assert "CORRECT" in obs.verification_result
+    # With 6 total skills loaded (1 relevant + 5 distractors):
+    # 0.6 + 0.3*(1/6) + 0.1*(1/1) - 0.15*5 = 0.6 + 0.05 + 0.1 - 0.75 = 0.0
+    # Reward should be much less than 1.0
+    assert obs.reward < 0.5, f"Bloat should reduce reward, got {obs.reward}"
 
-    print(f"[PASS] test_distractor_penalty (reward={obs.reward})")
+    print(f"[PASS] test_bloat_penalty (reward={obs.reward})")
+
+
+def test_load_unload_no_bloat():
+    """Load distractor, unload before submit → no bloat penalty."""
+    env = SkillInvocationEnvironment()
+
+    for seed in range(100):
+        obs = env.reset(seed=seed)
+        state = env.state
+        if state.task_id == "task_001":
+            break
+    else:
+        print("[SKIP] test_load_unload_no_bloat - couldn't find task_001")
+        return
+
+    # Load a distractor
+    distractor_id = None
+    for skill in obs.skill_catalog:
+        if skill["id"] != "skill_001":
+            distractor_id = skill["id"]
+            break
+    assert distractor_id is not None
+
+    env.step(SkillInvocationAction(action_type="load", skill_id=distractor_id))
+    # Unload it
+    env.step(SkillInvocationAction(action_type="unload", skill_id=distractor_id))
+    # Load relevant
+    env.step(SkillInvocationAction(action_type="load", skill_id="skill_001"))
+
+    correct_answer = """
+import hmac, hashlib, base64
+
+def encode_zephyr_auth(api_key: str, timestamp: int) -> dict:
+    signing_string = f"{api_key}:{timestamp}"
+    digest = hmac.new(api_key.encode(), signing_string.encode(), hashlib.sha256).digest()
+    b64 = base64.b64encode(digest).decode()
+    return {"X-Zephyr-Auth": f"ZPH {api_key}:{b64}:{timestamp}"}
+"""
+    obs = env.step(SkillInvocationAction(action_type="submit", answer=correct_answer))
+
+    assert obs.done is True
+    assert "CORRECT" in obs.verification_result
+    # Only skill_001 loaded at submit → no bloat
+    # 0.6 + 0.3 + 0.1 = 1.0
+    assert abs(obs.reward - 1.0) < 0.01, f"Expected ~1.0 after unload, got {obs.reward}"
+
+    print(f"[PASS] test_load_unload_no_bloat (reward={obs.reward})")
 
 
 def test_state_property():
@@ -224,13 +345,16 @@ def test_state_property():
     assert state.step_count == 0
     assert state.task_id != ""
     assert state.done is False
+    assert state.loaded_skills == []
+    assert state.context_budget_total == 5
 
     # After a step
     skill_id = obs.skill_catalog[0]["id"]
-    env.step(SkillInvocationAction(action_type="invoke", skill_id=skill_id))
+    env.step(SkillInvocationAction(action_type="load", skill_id=skill_id))
 
     state = env.state
     assert state.step_count == 1
+    assert skill_id in state.loaded_skills
 
     print("[PASS] test_state_property")
 
@@ -244,9 +368,17 @@ def test_all_tasks_have_valid_skills():
             assert sid in SKILL_BANK, f"Task {task['id']}: missing distractor skill {sid}"
         # Verify no overlap between relevant and distractor
         overlap = set(task["relevant_skills"]) & set(task["distractor_skills"])
-        assert len(overlap) == 0, f"Task {task['id']}: overlap between relevant and distractor: {overlap}"
+        assert len(overlap) == 0, f"Task {task['id']}: overlap: {overlap}"
+        # Each task now should have at least 5 skills in catalog
+        total = len(task["relevant_skills"]) + len(task["distractor_skills"])
+        assert total >= 5, f"Task {task['id']}: only {total} skills in catalog"
 
     print(f"[PASS] test_all_tasks_have_valid_skills ({len(TASK_BANK)} tasks verified)")
+
+
+# ---------------------------------------------------------------------------
+# Verifier tests (unchanged — these test verifier correctness, not env logic)
+# ---------------------------------------------------------------------------
 
 
 def test_verifier_task001_correct_code_passes():
@@ -280,7 +412,6 @@ def test_verifier_task001_wrong_format_fails():
 import hmac, hashlib, base64
 
 def encode_zephyr_auth(api_key: str, timestamp: int) -> dict:
-    # Wrong: using md5 instead of sha256
     signing_string = f"{api_key}:{timestamp}"
     digest = hmac.new(api_key.encode(), signing_string.encode(), hashlib.md5).digest()
     b64 = base64.b64encode(digest).decode()
@@ -341,7 +472,6 @@ def test_verifier_task003_structural():
     """Verify task_003 HelixLang structural verifier catches structure, not just keywords."""
     task = next(t for t in TASK_BANK if t["id"] == "task_003")
 
-    # Good pseudocode
     good = '''
 fn fetch_user(db: Database, user_id: str) -> result<User> {
     let conn = try! db.connect().with_context("step", "connecting to database")
@@ -362,7 +492,6 @@ fn fetch_user(db: Database, user_id: str) -> result<User> {
 '''
     assert task["verifier"](good), "Proper HelixLang pseudocode should pass"
 
-    # Keyword dump (no structure)
     keywords_only = "HLX-DATA try! with_context retry backoff helix.log.error result Ok Err"
     assert not task["verifier"](keywords_only), "Keywords without structure should fail"
 
@@ -402,7 +531,6 @@ canary:
 ```'''
     assert task["verifier"](good_yaml), "Valid ArcDeploy YAML should pass"
 
-    # Only keywords, no YAML
     keywords = "shadow canary_1 traffic_pct metrics_gate error_rate rollback auto: true"
     assert not task["verifier"](keywords), "Keywords-only should fail YAML verifier"
 
@@ -514,7 +642,6 @@ def hp_filter_correlation(series_a, series_b):
 def test_sb_003_dialogue_parser_correct():
     """Verify task_sb_003 dialogue parser passes with correct implementation."""
     task = next(t for t in TASK_BANK if t["id"] == "task_sb_003")
-    # Use a separate file-like approach to avoid backslash escaping issues
     correct_code = (
         'import re\n'
         '\n'
@@ -592,7 +719,7 @@ def test_procedural_auth_100_seeds():
         assert task["source"] == "procedural"
         assert task["template"] == "auth_protocol"
         assert len(task["relevant_skills"]) == 1
-        assert len(task["distractor_skills"]) == 2
+        assert len(task["distractor_skills"]) >= 4
 
         for sid in task["relevant_skills"] + task["distractor_skills"]:
             assert sid in skills, f"Skill {sid} not in generated skills for seed {seed}"
@@ -614,7 +741,7 @@ def test_procedural_binary_100_seeds():
         assert task["id"].startswith("task_proc_bin_")
         assert task["source"] == "procedural"
         assert len(task["relevant_skills"]) == 1
-        assert len(task["distractor_skills"]) == 2
+        assert len(task["distractor_skills"]) >= 4
 
         for sid in task["relevant_skills"] + task["distractor_skills"]:
             assert sid in skills
@@ -666,15 +793,15 @@ def test_procedural_env_integration():
 
     assert isinstance(obs, SkillInvocationObservation)
     assert obs.task_description != ""
-    assert len(obs.skill_catalog) >= 3
-    assert obs.remaining_invocations == 3
+    assert len(obs.skill_catalog) >= 5
+    assert obs.context_budget_total == 5
     assert obs.done is False
 
     skill_id = obs.skill_catalog[0]["id"]
-    obs2 = env.step(SkillInvocationAction(action_type="invoke", skill_id=skill_id))
+    obs2 = env.step(SkillInvocationAction(action_type="load", skill_id=skill_id))
     assert obs2.skill_content is not None
     assert len(obs2.skill_content) > 50
-    assert obs2.remaining_invocations == 2
+    assert obs2.context_budget_used == 1
 
     obs3 = env.step(SkillInvocationAction(action_type="submit", answer="test"))
     assert obs3.done is True
@@ -702,17 +829,24 @@ if __name__ == "__main__":
     print("=" * 60)
 
     tests = [
+        # Core environment tests
         test_reset,
-        test_invoke_skill,
-        test_invoke_unknown_skill,
-        test_exhausted_invocations,
+        test_list_action,
+        test_load_skill,
+        test_invoke_backward_compat,
+        test_unload_skill,
+        test_load_already_loaded,
+        test_unload_not_loaded,
+        test_context_budget,
+        test_load_unknown_skill,
         test_submit_incorrect,
         test_submit_after_done,
-        test_correct_submission_task_001,
-        test_distractor_penalty,
+        test_precision_reward,
+        test_bloat_penalty,
+        test_load_unload_no_bloat,
         test_state_property,
         test_all_tasks_have_valid_skills,
-        # Verifier-specific tests
+        # Verifier tests
         test_verifier_task001_correct_code_passes,
         test_verifier_task001_keywords_only_fails,
         test_verifier_task001_wrong_format_fails,
@@ -722,11 +856,11 @@ if __name__ == "__main__":
         test_verifier_task003_structural,
         test_verifier_task004_yaml_structure,
         test_verifier_task008_record_parser,
-        # SkillsBench-adapted task tests
+        # SkillsBench tests
         test_sb_001_flood_detection_correct,
         test_sb_002_hp_filter_correct,
         test_sb_003_dialogue_parser_correct,
-        # Procedural task generator tests
+        # Procedural generator tests
         test_procedural_auth_100_seeds,
         test_procedural_binary_100_seeds,
         test_procedural_deterministic,
@@ -743,6 +877,8 @@ if __name__ == "__main__":
             passed += 1
         except Exception as e:
             print(f"[FAIL] {test.__name__}: {e}")
+            import traceback
+            traceback.print_exc()
             failed += 1
 
     print("=" * 60)

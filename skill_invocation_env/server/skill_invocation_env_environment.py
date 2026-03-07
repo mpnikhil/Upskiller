@@ -2,8 +2,10 @@
 Skill Invocation Environment Implementation.
 
 Trains LLMs to decide WHEN to invoke procedural knowledge (skills) during
-task-solving. The agent gets a task + skill catalog, decides which skills to
-invoke for full procedural knowledge, then submits a solution.
+task-solving. Context cost model: each loaded skill costs context budget.
+Reward penalizes bloat and rewards precision.
+
+Actions: list, load, unload, submit (plus "invoke" as backward-compat alias for load).
 """
 
 import random
@@ -18,7 +20,7 @@ from task_bank import TASK_BANK, SKILL_BANK
 from task_generator import TaskGenerator
 
 
-MAX_INVOCATIONS = 3
+DEFAULT_CONTEXT_BUDGET = 5
 
 
 class SkillInvocationEnvironment(Environment):
@@ -27,14 +29,19 @@ class SkillInvocationEnvironment(Environment):
 
     Episodes:
     1. reset() samples a task, assembles skill catalog (relevant + distractors)
-    2. Agent can invoke skills (up to MAX_INVOCATIONS) to read full content
+    2. Agent can list, load, and unload skills (within context budget)
     3. Agent submits a solution
-    4. Reward is computed based on task correctness + invocation quality
+    4. Reward = correctness + precision - bloat
     """
 
     SUPPORTS_CONCURRENT_SESSIONS: bool = True
 
-    def __init__(self, use_procedural: bool = False, procedural_seed: int = 0):
+    def __init__(
+        self,
+        use_procedural: bool = False,
+        procedural_seed: int = 0,
+        context_budget: int = DEFAULT_CONTEXT_BUDGET,
+    ):
         super().__init__()
         self._state = SkillInvocationState(episode_id=str(uuid4()), step_count=0)
         self._current_task = None
@@ -42,7 +49,8 @@ class SkillInvocationEnvironment(Environment):
         self._messages: list[str] = []
         self._use_procedural = use_procedural
         self._task_generator = TaskGenerator(seed=procedural_seed) if use_procedural else None
-        self._episode_skills: dict = {}  # skills for current episode
+        self._episode_skills: dict = {}
+        self._context_budget = context_budget
 
     def reset(
         self,
@@ -55,13 +63,11 @@ class SkillInvocationEnvironment(Environment):
             random.seed(seed)
 
         if self._use_procedural and self._task_generator:
-            # Generate a procedural task
             gen_seed = seed if seed is not None else random.randint(0, 2**31)
             result = self._task_generator.generate_with_seed(gen_seed)
             task = result["task"]
             self._episode_skills = result["skills"]
         else:
-            # Pick a random static task
             task = random.choice(TASK_BANK)
             self._episode_skills = SKILL_BANK
 
@@ -88,24 +94,20 @@ class SkillInvocationEnvironment(Environment):
             episode_id=eid,
             step_count=0,
             task_id=task["id"],
+            loaded_skills=[],
+            skills_ever_loaded=[],
             skills_invoked=[],
             difficulty=task["difficulty"],
             done=False,
-            remaining_invocations=MAX_INVOCATIONS,
+            context_budget_total=self._context_budget,
+            remaining_invocations=self._context_budget,
         )
         self._messages = [f"Episode started. Task: {task['id']} ({task['difficulty']})"]
 
-        return SkillInvocationObservation(
-            task_description=task["description"],
-            skill_catalog=skill_catalog,
-            difficulty=task["difficulty"],
+        return self._make_observation(
             skill_content=None,
-            remaining_invocations=MAX_INVOCATIONS,
-            verification_result=None,
-            skills_invoked=[],
-            messages=list(self._messages),
-            done=False,
             reward=0.0,
+            done=False,
         )
 
     def step(
@@ -114,7 +116,7 @@ class SkillInvocationEnvironment(Environment):
         timeout_s: Optional[float] = None,
         **kwargs,
     ) -> SkillInvocationObservation:
-        """Process an invoke or submit action."""
+        """Process a list, load, unload, or submit action."""
         self._state.step_count += 1
 
         if self._state.done:
@@ -126,29 +128,39 @@ class SkillInvocationEnvironment(Environment):
                 done=True,
             )
 
-        if action.action_type == "invoke":
-            return self._handle_invoke(action)
-        elif action.action_type == "submit":
+        action_type = action.action_type
+
+        # Backward compat: "invoke" is an alias for "load"
+        if action_type == "invoke":
+            action_type = "load"
+
+        if action_type == "list":
+            return self._handle_list()
+        elif action_type == "load":
+            return self._handle_load(action)
+        elif action_type == "unload":
+            return self._handle_unload(action)
+        elif action_type == "submit":
             return self._handle_submit(action)
         else:
             self._messages.append(f"Unknown action_type: {action.action_type}")
             return self._make_observation(
                 skill_content=None,
-                verification_result=None,
                 reward=0.0,
                 done=False,
             )
 
-    def _handle_invoke(self, action: SkillInvocationAction) -> SkillInvocationObservation:
-        """Handle a skill invocation action."""
+    def _handle_list(self) -> SkillInvocationObservation:
+        """Return catalog without state change."""
+        self._messages.append("Listed skill catalog.")
+        return self._make_observation(skill_content=None, reward=0.0, done=False)
+
+    def _handle_load(self, action: SkillInvocationAction) -> SkillInvocationObservation:
+        """Load a skill into context."""
         skill_id = action.skill_id
 
         if not skill_id:
-            self._messages.append("invoke action requires skill_id")
-            return self._make_observation(skill_content=None, reward=0.0, done=False)
-
-        if self._state.remaining_invocations <= 0:
-            self._messages.append("No remaining invocations. Submit your answer.")
+            self._messages.append("load action requires skill_id")
             return self._make_observation(skill_content=None, reward=0.0, done=False)
 
         if skill_id not in self._episode_skills:
@@ -159,16 +171,35 @@ class SkillInvocationEnvironment(Environment):
             self._messages.append(f"Skill {skill_id} not in current catalog.")
             return self._make_observation(skill_content=None, reward=0.0, done=False)
 
-        # Successful invocation
-        self._state.remaining_invocations -= 1
-        if skill_id not in self._state.skills_invoked:
-            self._state.skills_invoked.append(skill_id)
+        # Already loaded — no-op, but still return content
+        if skill_id in self._state.loaded_skills:
+            full_content = self._episode_skills[skill_id]["full_content"]
+            self._messages.append(f"Skill {skill_id} already loaded.")
+            return self._make_observation(skill_content=full_content, reward=0.0, done=False)
+
+        # Check context budget
+        if len(self._state.loaded_skills) >= self._state.context_budget_total:
+            self._messages.append(
+                f"Context budget full ({self._state.context_budget_total} skills loaded). "
+                "Unload a skill first."
+            )
+            return self._make_observation(skill_content=None, reward=0.0, done=False)
+
+        # Load skill
+        self._state.loaded_skills.append(skill_id)
+        if skill_id not in self._state.skills_ever_loaded:
+            self._state.skills_ever_loaded.append(skill_id)
+        # Backward compat
+        self._state.skills_invoked = list(self._state.skills_ever_loaded)
+        self._state.remaining_invocations = (
+            self._state.context_budget_total - len(self._state.loaded_skills)
+        )
 
         full_content = self._episode_skills[skill_id]["full_content"]
         skill_name = self._episode_skills[skill_id]["name"]
         self._messages.append(
-            f"Invoked skill '{skill_name}' ({skill_id}). "
-            f"Remaining invocations: {self._state.remaining_invocations}"
+            f"Loaded skill '{skill_name}' ({skill_id}). "
+            f"Context: {len(self._state.loaded_skills)}/{self._state.context_budget_total}"
         )
 
         return self._make_observation(
@@ -177,8 +208,33 @@ class SkillInvocationEnvironment(Environment):
             done=False,
         )
 
+    def _handle_unload(self, action: SkillInvocationAction) -> SkillInvocationObservation:
+        """Unload a skill from context."""
+        skill_id = action.skill_id
+
+        if not skill_id:
+            self._messages.append("unload action requires skill_id")
+            return self._make_observation(skill_content=None, reward=0.0, done=False)
+
+        if skill_id not in self._state.loaded_skills:
+            self._messages.append(f"Skill {skill_id} is not currently loaded.")
+            return self._make_observation(skill_content=None, reward=0.0, done=False)
+
+        self._state.loaded_skills.remove(skill_id)
+        self._state.remaining_invocations = (
+            self._state.context_budget_total - len(self._state.loaded_skills)
+        )
+
+        skill_name = self._episode_skills[skill_id]["name"]
+        self._messages.append(
+            f"Unloaded skill '{skill_name}' ({skill_id}). "
+            f"Context: {len(self._state.loaded_skills)}/{self._state.context_budget_total}"
+        )
+
+        return self._make_observation(skill_content=None, reward=0.0, done=False)
+
     def _handle_submit(self, action: SkillInvocationAction) -> SkillInvocationObservation:
-        """Handle a solution submission. Compute composite reward."""
+        """Handle a solution submission. Compute reward based on correctness + precision - bloat."""
         answer = action.answer or ""
         task = self._current_task
 
@@ -188,34 +244,40 @@ class SkillInvocationEnvironment(Environment):
         except Exception:
             task_correct = False
 
-        # Compute composite reward
-        # 1. Task correctness: 0 or 1 * 0.7
-        correctness_reward = 0.7 if task_correct else 0.0
+        # Compute reward
+        loaded = set(self._state.loaded_skills)
+        relevant = set(task["relevant_skills"])
 
-        # 2. Invocation bonus: +0.2 for each relevant skill correctly invoked (normalized)
-        relevant_skills = set(task["relevant_skills"])
-        invoked_skills = set(self._state.skills_invoked)
-        relevant_invoked = relevant_skills & invoked_skills
-        if relevant_skills:
-            invocation_bonus = 0.2 * (len(relevant_invoked) / len(relevant_skills))
+        # 1. Correctness: +0.6
+        correctness = 0.6 if task_correct else 0.0
+
+        # 2. Precision: what fraction of loaded skills are relevant?
+        if len(loaded) > 0:
+            precision = len(loaded & relevant) / len(loaded)
         else:
-            invocation_bonus = 0.0
+            precision = 0.0
+        precision_bonus = 0.3 * precision
 
-        # 3. Distractor penalty: -0.1 for each distractor invoked
-        distractor_skills = set(task["distractor_skills"])
-        distractors_invoked = distractor_skills & invoked_skills
-        distractor_penalty = -0.1 * len(distractors_invoked)
+        # 3. Recall: did you load all relevant skills?
+        if len(relevant) > 0:
+            recall = len(loaded & relevant) / len(relevant)
+        else:
+            recall = 1.0
+        recall_bonus = 0.1 * recall
 
-        total_reward = correctness_reward + invocation_bonus + distractor_penalty
-        total_reward = max(total_reward, -1.0)  # Floor at -1.0
+        # 4. Bloat: penalty for unnecessary skills loaded at submit time
+        unnecessary = loaded - relevant
+        bloat_penalty = -0.15 * len(unnecessary)
+
+        total_reward = correctness + precision_bonus + recall_bonus + bloat_penalty
+        total_reward = max(total_reward, -1.0)
 
         self._state.done = True
         verification_msg = (
             f"{'CORRECT' if task_correct else 'INCORRECT'}. "
-            f"Reward breakdown: correctness={correctness_reward:.2f}, "
-            f"invocation_bonus={invocation_bonus:.2f}, "
-            f"distractor_penalty={distractor_penalty:.2f}, "
-            f"total={total_reward:.2f}"
+            f"Reward: correctness={correctness:.2f}, "
+            f"precision={precision_bonus:.2f}, recall={recall_bonus:.2f}, "
+            f"bloat={bloat_penalty:.2f}, total={total_reward:.2f}"
         )
         self._messages.append(f"Submitted answer. {verification_msg}")
 
@@ -246,14 +308,26 @@ class SkillInvocationEnvironment(Environment):
                         "description": skill["short_description"],
                     })
 
+        # Build loaded skill contents
+        loaded_contents = {}
+        for sid in self._state.loaded_skills:
+            if sid in self._episode_skills:
+                loaded_contents[sid] = self._episode_skills[sid]["full_content"]
+
         return SkillInvocationObservation(
             task_description=task["description"] if task else "",
             skill_catalog=catalog,
             difficulty=self._state.difficulty,
+            loaded_skills=list(self._state.loaded_skills),
+            loaded_skill_contents=loaded_contents,
+            context_budget_used=len(self._state.loaded_skills),
+            context_budget_total=self._state.context_budget_total,
             skill_content=skill_content,
-            remaining_invocations=self._state.remaining_invocations,
+            remaining_invocations=(
+                self._state.context_budget_total - len(self._state.loaded_skills)
+            ),
             verification_result=verification_result,
-            skills_invoked=list(self._state.skills_invoked),
+            skills_invoked=list(self._state.skills_ever_loaded),
             messages=list(self._messages),
             done=done,
             reward=reward,

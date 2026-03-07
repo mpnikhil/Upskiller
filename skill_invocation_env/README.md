@@ -25,24 +25,40 @@ Skills are essential when the task requires knowledge that:
 2. **Has precise, non-obvious specifications** (e.g., binary format byte layouts, exact CLI commands)
 3. **Would be impossible to guess correctly** (e.g., specific error code formats, deployment phase configurations)
 
-## How It Works
+## Context Cost Model
 
-Each episode:
-1. Agent receives a **task description** + a **skill catalog** (short descriptions only)
-2. Agent can **invoke skills** (up to 3) to read full procedural content
-3. Agent **submits a solution**
-4. Environment computes a **composite reward**
+Skills aren't free — each loaded skill consumes context budget.
+The environment rewards precision: agents that load only the skills
+they need get higher rewards than agents that load everything.
 
-## Reward Function
+### Actions
+
+- `list` — View available skills (free, no context cost)
+- `load(skill_id)` — Load full skill content into context (costs budget)
+- `unload(skill_id)` — Remove skill from context (frees budget)
+- `submit(answer)` — Submit solution (reward computed on loaded state at submit time)
+
+The unload mechanic is key: agents can load a skill to read it, decide it's not useful, and unload it before submitting to avoid the bloat penalty.
+
+### Reward Function
 
 ```
-reward = task_correct * 0.7
-       + invocation_bonus * 0.2   (for each relevant skill invoked, normalized)
-       - distractor_penalty * 0.1 (for each distractor skill invoked)
+correctness  = 0.6  if answer is correct, else 0.0
+precision    = 0.3 × (relevant loaded / total loaded)
+recall       = 0.1 × (relevant loaded / total relevant)
+bloat        = -0.15 per unnecessary skill loaded at submit time
+total        = max(correctness + precision + recall + bloat, -1.0)
 ```
 
-- Maximum reward: 0.9 (correct answer + all relevant skills invoked, no distractors)
-- Minimum reward: -1.0 (floor)
+| Scenario | Correct? | Loaded | Relevant | Reward |
+|----------|----------|--------|----------|--------|
+| Right skill, correct answer | Yes | {A} | {A} | **1.0** |
+| Right skill + 1 distractor | Yes | {A,B} | {A} | **0.7** |
+| All 5 loaded, correct | Yes | {A,B,C,D,E} | {A} | **0.16** |
+| No skills loaded, correct | Yes | {} | {A} | **0.6** |
+| Right skill, wrong answer | No | {A} | {A} | **0.4** |
+
+**Best policy: load exactly the right skill(s), solve correctly → 1.0**
 
 ## Quick Start
 
@@ -64,9 +80,16 @@ obs = env.reset(seed=42)
 print(f"Task: {obs.task_description}")
 print(f"Skills: {[s['name'] for s in obs.skill_catalog]}")
 
-# Invoke a skill
-obs = env.step(SkillInvocationAction(action_type="invoke", skill_id=obs.skill_catalog[0]["id"]))
+# List skills (free)
+obs = env.step(SkillInvocationAction(action_type="list"))
+
+# Load a skill (costs context)
+obs = env.step(SkillInvocationAction(action_type="load", skill_id=obs.skill_catalog[0]["id"]))
 print(f"Skill content: {obs.skill_content[:200]}...")
+print(f"Context: {obs.context_budget_used}/{obs.context_budget_total}")
+
+# Unload if not needed
+obs = env.step(SkillInvocationAction(action_type="unload", skill_id=obs.loaded_skills[0]))
 
 # Submit answer
 obs = env.step(SkillInvocationAction(action_type="submit", answer="your solution here"))
@@ -89,9 +112,9 @@ with SkillInvocationEnv(base_url="http://localhost:8000") as client:
     result = client.reset()
     print(f"Task: {result.observation.task_description}")
 
-    # Invoke a skill
+    # Load a skill
     skill_id = result.observation.skill_catalog[0]["id"]
-    result = client.step(SkillInvocationAction(action_type="invoke", skill_id=skill_id))
+    result = client.step(SkillInvocationAction(action_type="load", skill_id=skill_id))
 
     # Submit
     result = client.step(SkillInvocationAction(action_type="submit", answer="solution"))
@@ -107,7 +130,8 @@ docker run -p 8000:8000 skill-invocation-env
 
 ## Task Domains
 
-The environment includes 13 tasks (10 synthetic + 3 from SkillsBench) across 9 domains:
+The environment includes 13 tasks (10 synthetic + 3 from SkillsBench) across 9 domains,
+each with 5-8 skills in the catalog (1-2 relevant + 4-6 distractors):
 
 | Domain | Skills | Tasks | Difficulty |
 |--------|--------|-------|------------|
@@ -162,7 +186,7 @@ obs = env.reset(seed=1)  # completely different task
 ## Testing
 
 ```bash
-python test_env.py  # 28 tests
+python test_env.py  # 34 tests
 ```
 
 ## Project Structure
@@ -178,7 +202,7 @@ skill_invocation_env/
 ├── openenv.yaml
 ├── pyproject.toml
 ├── train_demo.py          # Integration demo script
-├── test_env.py            # Local test suite (28 tests)
+├── test_env.py            # Local test suite (34 tests)
 └── server/
     ├── skill_invocation_env_environment.py  # Core Environment logic
     ├── app.py                               # FastAPI server

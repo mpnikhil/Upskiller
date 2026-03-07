@@ -773,7 +773,7 @@ TASK_BANK: list[dict] = [
             "with the header."
         ),
         "relevant_skills": ["skill_001"],
-        "distractor_skills": ["skill_002", "skill_003"],
+        "distractor_skills": ["skill_002", "skill_003", "skill_007", "skill_013", "skill_017"],
         "verifier": _exec_verifier("encode_zephyr_auth", _ZEPHYR_TEST_CASES),
     },
     # --- Task 2: NovaBin Header Parser (Easy) --- exec verifier
@@ -787,7 +787,7 @@ TASK_BANK: list[dict] = [
             "and 'checksum'. Parse according to the NovaBin file format specification."
         ),
         "relevant_skills": ["skill_004"],
-        "distractor_skills": ["skill_005", "skill_017"],
+        "distractor_skills": ["skill_005", "skill_017", "skill_003", "skill_008", "skill_013"],
         "verifier": _exec_verifier("parse_novabin_header", _NOVABIN_HEADER_TEST_CASES),
     },
     # --- Task 3: HelixLang Error Handling (Easy) --- structural verifier
@@ -802,7 +802,7 @@ TASK_BANK: list[dict] = [
             "error logging."
         ),
         "relevant_skills": ["skill_006"],
-        "distractor_skills": ["skill_007", "skill_008"],
+        "distractor_skills": ["skill_007", "skill_008", "skill_002", "skill_015", "skill_018"],
         "verifier": _structural_verifier([
             # Has a correctly-formatted error code (HLX-CATEGORY-NNNN)
             lambda a: bool(re.search(r'HLX-(IO|NET|AUTH|DATA|SYS)-\d{4}', a)),
@@ -829,7 +829,7 @@ TASK_BANK: list[dict] = [
             "durations, and metrics gates. Include automatic rollback configuration."
         ),
         "relevant_skills": ["skill_009"],
-        "distractor_skills": ["skill_010", "skill_011"],
+        "distractor_skills": ["skill_010", "skill_011", "skill_005", "skill_017", "skill_003"],
         "verifier": _verify_arcdeploy_yaml,
     },
     # --- Task 5: CrystalQL Temporal Query (Easy) --- structural verifier
@@ -842,7 +842,7 @@ TASK_BANK: list[dict] = [
             "2024. Use temporal aggregation functions and a tumbling window of 1 day."
         ),
         "relevant_skills": ["skill_012"],
-        "distractor_skills": ["skill_013", "skill_005"],
+        "distractor_skills": ["skill_013", "skill_005", "skill_002", "skill_008", "skill_017"],
         "verifier": _structural_verifier([
             # Uses TEMPORAL_AVG function with parenthesized args
             lambda a: bool(re.search(r'TEMPORAL_AVG\s*\(', a, re.IGNORECASE)),
@@ -873,7 +873,7 @@ TASK_BANK: list[dict] = [
             "Include error handling that triggers rollback if verification fails."
         ),
         "relevant_skills": ["skill_014"],
-        "distractor_skills": ["skill_015", "skill_003"],
+        "distractor_skills": ["skill_015", "skill_003", "skill_010", "skill_007", "skill_018"],
         "verifier": _structural_verifier([
             # Commands appear in correct lifecycle order: prepare < activate < verify < commit
             lambda a: (
@@ -912,7 +912,7 @@ TASK_BANK: list[dict] = [
             "proper error handling with dead letter queue and retry logic."
         ),
         "relevant_skills": ["skill_016"],
-        "distractor_skills": ["skill_017", "skill_018"],
+        "distractor_skills": ["skill_017", "skill_018", "skill_002", "skill_010", "skill_013"],
         "verifier": _structural_verifier([
             # Pipeline declaration with correct name
             lambda a: bool(re.search(r'pipeline\s+order_analytics\s*\{', a)),
@@ -944,7 +944,7 @@ TASK_BANK: list[dict] = [
             "string, and bool according to the NovaBin format specification."
         ),
         "relevant_skills": ["skill_004"],
-        "distractor_skills": ["skill_005", "skill_013"],
+        "distractor_skills": ["skill_005", "skill_013", "skill_001", "skill_015", "skill_018"],
         "verifier": _exec_verifier("parse_novabin_record", _NOVABIN_RECORD_TEST_CASES),
     },
     # --- Task 9: CrystalQL + VaultSync Integration (Hard) --- multi-part verifier
@@ -961,7 +961,7 @@ TASK_BANK: list[dict] = [
             "VaultSync SDK that auto-refreshes the database connection on secret rotation."
         ),
         "relevant_skills": ["skill_012", "skill_014"],
-        "distractor_skills": ["skill_013", "skill_015", "skill_010"],
+        "distractor_skills": ["skill_013", "skill_015", "skill_010", "skill_002", "skill_017"],
         "verifier": _multi_part_verifier([
             # Part 1: CrystalQL temporal join query
             lambda a: bool(re.search(r'TEMPORAL\s+JOIN', a, re.IGNORECASE)),
@@ -992,7 +992,7 @@ TASK_BANK: list[dict] = [
             "the deployment and deploy the monitoring pipeline."
         ),
         "relevant_skills": ["skill_009", "skill_016"],
-        "distractor_skills": ["skill_010", "skill_011", "skill_018"],
+        "distractor_skills": ["skill_010", "skill_011", "skill_018", "skill_003", "skill_013"],
         "verifier": _multi_part_verifier([
             # Part 1: ArcDeploy config — shadow phase + metrics gates
             lambda a: bool(re.search(r'name:\s*shadow', a)),
@@ -1449,7 +1449,7 @@ TASK_BANK.extend([
             "where water level >= threshold. Only include stations with at least 1 flood day."
         ),
         "relevant_skills": ["skill_sb_001"],
-        "distractor_skills": ["skill_sb_002", "skill_sb_003"],
+        "distractor_skills": ["skill_sb_002", "skill_sb_003", "skill_sb_005", "skill_sb_008", "skill_sb_009"],
         "verifier": _exec_verifier("detect_flood_days", [
             {
                 "args": [
@@ -1491,7 +1491,7 @@ TASK_BANK.extend([
             "You may use numpy and scipy (statsmodels.api.tsa.filters.hpfilter is available)."
         ),
         "relevant_skills": ["skill_sb_004"],
-        "distractor_skills": ["skill_sb_005", "skill_sb_006"],
+        "distractor_skills": ["skill_sb_005", "skill_sb_006", "skill_sb_002", "skill_sb_009", "skill_sb_003"],
         "verifier": _exec_verifier("hp_filter_correlation", [
             {
                 "args": [_SB_HP_SERIES_A, _SB_HP_SERIES_B],
@@ -1527,7 +1527,7 @@ TASK_BANK.extend([
             "choices or empty string for line transitions."
         ),
         "relevant_skills": ["skill_sb_007"],
-        "distractor_skills": ["skill_sb_008", "skill_sb_009"],
+        "distractor_skills": ["skill_sb_008", "skill_sb_009", "skill_sb_002", "skill_sb_005", "skill_sb_006"],
         "verifier": _exec_verifier("parse_dialogue", [
             {
                 "args": [_SB_DIALOGUE_TEST_SCRIPT],

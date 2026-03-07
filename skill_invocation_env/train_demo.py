@@ -40,19 +40,20 @@ def demo_direct():
         print(f"Task: {obs.task_description[:100]}...")
         print(f"Difficulty: {obs.difficulty}")
         print(f"Skills available: {[s['name'] for s in obs.skill_catalog]}")
-        print(f"Remaining invocations: {obs.remaining_invocations}")
+        print(f"Context budget: {obs.context_budget_used}/{obs.context_budget_total}")
 
-        # Strategy: invoke the first skill in catalog
+        # Strategy: load the first skill in catalog
         if obs.skill_catalog:
             skill = obs.skill_catalog[0]
-            print(f"\nInvoking skill: {skill['name']} ({skill['id']})")
+            print(f"\nLoading skill: {skill['name']} ({skill['id']})")
             obs = env.step(SkillInvocationAction(
-                action_type="invoke",
+                action_type="load",
                 skill_id=skill["id"],
             ))
             if obs.skill_content:
                 print(f"Got skill content ({len(obs.skill_content)} chars)")
                 print(f"Preview: {obs.skill_content[:150]}...")
+                print(f"Context: {obs.context_budget_used}/{obs.context_budget_total}")
 
         # Submit a dummy answer
         print("\nSubmitting answer...")
@@ -82,14 +83,14 @@ def demo_client(base_url: str):
         print(f"Task: {obs.task_description[:100]}...")
         print(f"Skills available: {[s['name'] for s in obs.skill_catalog]}")
 
-        # Invoke first skill
+        # Load first skill
         if obs.skill_catalog:
             skill = obs.skill_catalog[0]
             result = client.step(SkillInvocationAction(
-                action_type="invoke",
+                action_type="load",
                 skill_id=skill["id"],
             ))
-            print(f"\nInvoked '{skill['name']}'")
+            print(f"\nLoaded '{skill['name']}'")
             if result.observation.skill_content:
                 print(f"Content preview: {result.observation.skill_content[:200]}...")
 
