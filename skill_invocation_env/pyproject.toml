@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "skill_invocation_env"
+version = "0.1.0"
+description = "OpenEnv RL environment for training LLMs to invoke procedural knowledge (skills) during task-solving"
+requires-python = ">=3.10"
+dependencies = [
+    "openenv-core[core]>=0.2.1",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[project.scripts]
+server = "skill_invocation_env.server.app:main"
+
+[tool.setuptools]
+include-package-data = true
+packages = ["skill_invocation_env", "skill_invocation_env.server"]
+package-dir = { "skill_invocation_env" = ".", "skill_invocation_env.server" = "server" }
