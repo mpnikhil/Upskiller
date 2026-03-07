@@ -134,9 +134,7 @@ class SkillInvocationEnvironment(Environment):
         if action_type == "invoke":
             action_type = "load"
 
-        if action_type == "list":
-            return self._handle_list()
-        elif action_type == "load":
+        if action_type == "load":
             return self._handle_load(action)
         elif action_type == "unload":
             return self._handle_unload(action)
@@ -149,11 +147,6 @@ class SkillInvocationEnvironment(Environment):
                 reward=0.0,
                 done=False,
             )
-
-    def _handle_list(self) -> SkillInvocationObservation:
-        """Return catalog without state change."""
-        self._messages.append("Listed skill catalog.")
-        return self._make_observation(skill_content=None, reward=0.0, done=False)
 
     def _handle_load(self, action: SkillInvocationAction) -> SkillInvocationObservation:
         """Load a skill into context."""

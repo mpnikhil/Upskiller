@@ -32,8 +32,8 @@ class SkillInvocationAction(Action):
     action_type: str = Field(
         ...,
         description=(
-            '"list" to view catalog, "load" to load a skill, '
-            '"unload" to remove a skill, "submit" to submit answer'
+            '"load" to load a skill, "unload" to unload a skill, '
+            'or "submit" to submit answer'
         ),
     )
     skill_id: Optional[str] = Field(

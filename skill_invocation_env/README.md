@@ -33,12 +33,11 @@ they need get higher rewards than agents that load everything.
 
 ### Actions
 
-- `list` — View available skills (free, no context cost)
 - `load(skill_id)` — Load full skill content into context (costs budget)
 - `unload(skill_id)` — Remove skill from context (frees budget)
 - `submit(answer)` — Submit solution (reward computed on loaded state at submit time)
 
-The unload mechanic is key: agents can load a skill to read it, decide it's not useful, and unload it before submitting to avoid the bloat penalty.
+The skill catalog (short descriptions) is returned in every observation, so agents always know what's available. The unload mechanic is key: agents can load a skill to read it, decide it's not useful, and unload it before submitting to avoid the bloat penalty.
 
 ### Reward Function
 
@@ -79,9 +78,6 @@ obs = env.reset(seed=42)
 
 print(f"Task: {obs.task_description}")
 print(f"Skills: {[s['name'] for s in obs.skill_catalog]}")
-
-# List skills (free)
-obs = env.step(SkillInvocationAction(action_type="list"))
 
 # Load a skill (costs context)
 obs = env.step(SkillInvocationAction(action_type="load", skill_id=obs.skill_catalog[0]["id"]))

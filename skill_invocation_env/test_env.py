@@ -46,23 +46,6 @@ def test_reset():
     print("[PASS] test_reset")
 
 
-def test_list_action():
-    """Test that list action returns catalog without state change."""
-    env = SkillInvocationEnvironment()
-    obs = env.reset(seed=42)
-
-    action = SkillInvocationAction(action_type="list")
-    obs2 = env.step(action)
-
-    assert obs2.skill_content is None
-    assert len(obs2.skill_catalog) == len(obs.skill_catalog)
-    assert obs2.loaded_skills == []
-    assert obs2.context_budget_used == 0
-    assert obs2.done is False
-
-    print("[PASS] test_list_action")
-
-
 def test_load_skill():
     """Test loading a skill puts it in context."""
     env = SkillInvocationEnvironment()
@@ -831,7 +814,6 @@ if __name__ == "__main__":
     tests = [
         # Core environment tests
         test_reset,
-        test_list_action,
         test_load_skill,
         test_invoke_backward_compat,
         test_unload_skill,
