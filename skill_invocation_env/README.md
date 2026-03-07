@@ -136,10 +136,33 @@ ground to fix this.
 Adapted tasks use real SkillsBench skill content, distilled into our text-in/text-out
 Gymnasium format with deterministic code execution verifiers.
 
+## Procedural Task Generation
+
+The environment includes a `TaskGenerator` that creates unlimited unique tasks at runtime,
+preventing LLM memorization of fixed task content.
+
+### Templates
+
+| Template | What It Randomizes | Verifier |
+|----------|--------------------|----------|
+| `auth_protocol` | API name, hash algo (SHA-256/384/512/MD5), signing format, header format | HMAC exec |
+| `binary_format` | Format name, magic bytes, endianness, flag names/bits | struct exec |
+
+### Usage
+
+```python
+from skill_invocation_env.server.skill_invocation_env_environment import SkillInvocationEnvironment
+
+# Procedural mode: every reset() generates a unique task
+env = SkillInvocationEnvironment(use_procedural=True, procedural_seed=42)
+obs = env.reset(seed=0)  # unique task from seed 0
+obs = env.reset(seed=1)  # completely different task
+```
+
 ## Testing
 
 ```bash
-python test_env.py
+python test_env.py  # 28 tests
 ```
 
 ## Project Structure
@@ -150,11 +173,12 @@ skill_invocation_env/
 ├── models.py              # Pydantic Action/Observation/State
 ├── client.py              # SkillInvocationEnv(EnvClient)
 ├── task_bank.py           # 13 tasks + 27 skills + verifiers
+├── task_generator.py      # Procedural task generator (2 templates)
 ├── README.md
 ├── openenv.yaml
 ├── pyproject.toml
 ├── train_demo.py          # Integration demo script
-├── test_env.py            # Local test suite (22 tests)
+├── test_env.py            # Local test suite (28 tests)
 └── server/
     ├── skill_invocation_env_environment.py  # Core Environment logic
     ├── app.py                               # FastAPI server

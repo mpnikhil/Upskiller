@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from models import SkillInvocationAction, SkillInvocationObservation, SkillInvocationState
 from task_bank import TASK_BANK, SKILL_BANK
 from server.skill_invocation_env_environment import SkillInvocationEnvironment
+from task_generator import TaskGenerator
 
 
 def test_reset():
@@ -574,6 +575,127 @@ def test_sb_003_dialogue_parser_correct():
     print("[PASS] test_sb_003_dialogue_parser_correct")
 
 
+# ---------------------------------------------------------------------------
+# Procedural task generator tests
+# ---------------------------------------------------------------------------
+
+
+def test_procedural_auth_100_seeds():
+    """Test auth protocol template produces valid, verifiable tasks for 100 seeds."""
+    gen = TaskGenerator(seed=0)
+    for seed in range(100):
+        result = gen.generate_with_seed(seed, template="auth_protocol")
+        task = result["task"]
+        skills = result["skills"]
+
+        assert task["id"].startswith("task_proc_auth_")
+        assert task["source"] == "procedural"
+        assert task["template"] == "auth_protocol"
+        assert len(task["relevant_skills"]) == 1
+        assert len(task["distractor_skills"]) == 2
+
+        for sid in task["relevant_skills"] + task["distractor_skills"]:
+            assert sid in skills, f"Skill {sid} not in generated skills for seed {seed}"
+
+        rel_skill = skills[task["relevant_skills"][0]]
+        assert len(rel_skill["full_content"]) > 100
+
+    print("[PASS] test_procedural_auth_100_seeds")
+
+
+def test_procedural_binary_100_seeds():
+    """Test binary format template produces valid tasks for 100 seeds."""
+    gen = TaskGenerator(seed=0)
+    for seed in range(100):
+        result = gen.generate_with_seed(seed, template="binary_format")
+        task = result["task"]
+        skills = result["skills"]
+
+        assert task["id"].startswith("task_proc_bin_")
+        assert task["source"] == "procedural"
+        assert len(task["relevant_skills"]) == 1
+        assert len(task["distractor_skills"]) == 2
+
+        for sid in task["relevant_skills"] + task["distractor_skills"]:
+            assert sid in skills
+
+    print("[PASS] test_procedural_binary_100_seeds")
+
+
+def test_procedural_deterministic():
+    """Same seed produces identical tasks."""
+    gen = TaskGenerator(seed=0)
+    r1 = gen.generate_with_seed(42, template="auth_protocol")
+    r2 = gen.generate_with_seed(42, template="auth_protocol")
+
+    assert r1["task"]["id"] == r2["task"]["id"]
+    assert r1["task"]["description"] == r2["task"]["description"]
+    assert r1["task"]["relevant_skills"] == r2["task"]["relevant_skills"]
+    assert r1["task"]["distractor_skills"] == r2["task"]["distractor_skills"]
+
+    r3 = gen.generate_with_seed(42, template="binary_format")
+    r4 = gen.generate_with_seed(42, template="binary_format")
+    assert r3["task"]["id"] == r4["task"]["id"]
+    assert r3["task"]["description"] == r4["task"]["description"]
+
+    print("[PASS] test_procedural_deterministic")
+
+
+def test_procedural_keyword_stuffing_fails():
+    """Keyword-stuffed answers should fail procedural verifiers."""
+    gen = TaskGenerator(seed=0)
+
+    for seed in range(10):
+        result = gen.generate_with_seed(seed, template="auth_protocol")
+        task = result["task"]
+        garbage = "HMAC SHA256 base64 signing API key authentication header"
+        assert not task["verifier"](garbage), f"Keyword stuffing passed for auth seed {seed}"
+
+        result = gen.generate_with_seed(seed, template="binary_format")
+        task = result["task"]
+        garbage = "struct unpack CRC32 magic bytes header version flags"
+        assert not task["verifier"](garbage), f"Keyword stuffing passed for binary seed {seed}"
+
+    print("[PASS] test_procedural_keyword_stuffing_fails")
+
+
+def test_procedural_env_integration():
+    """Test environment works with use_procedural=True."""
+    env = SkillInvocationEnvironment(use_procedural=True, procedural_seed=42)
+    obs = env.reset(seed=100)
+
+    assert isinstance(obs, SkillInvocationObservation)
+    assert obs.task_description != ""
+    assert len(obs.skill_catalog) >= 3
+    assert obs.remaining_invocations == 3
+    assert obs.done is False
+
+    skill_id = obs.skill_catalog[0]["id"]
+    obs2 = env.step(SkillInvocationAction(action_type="invoke", skill_id=skill_id))
+    assert obs2.skill_content is not None
+    assert len(obs2.skill_content) > 50
+    assert obs2.remaining_invocations == 2
+
+    obs3 = env.step(SkillInvocationAction(action_type="submit", answer="test"))
+    assert obs3.done is True
+    assert obs3.reward is not None
+
+    print("[PASS] test_procedural_env_integration")
+
+
+def test_procedural_uniqueness():
+    """Different seeds produce different tasks."""
+    gen = TaskGenerator(seed=0)
+    descriptions = set()
+    for seed in range(50):
+        result = gen.generate_with_seed(seed, template="auth_protocol")
+        descriptions.add(result["task"]["description"])
+
+    assert len(descriptions) >= 10, f"Only {len(descriptions)} unique tasks from 50 seeds"
+
+    print("[PASS] test_procedural_uniqueness")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("Skill Invocation Environment - Local Tests")
@@ -604,6 +726,13 @@ if __name__ == "__main__":
         test_sb_001_flood_detection_correct,
         test_sb_002_hp_filter_correct,
         test_sb_003_dialogue_parser_correct,
+        # Procedural task generator tests
+        test_procedural_auth_100_seeds,
+        test_procedural_binary_100_seeds,
+        test_procedural_deterministic,
+        test_procedural_keyword_stuffing_fails,
+        test_procedural_env_integration,
+        test_procedural_uniqueness,
     ]
 
     passed = 0

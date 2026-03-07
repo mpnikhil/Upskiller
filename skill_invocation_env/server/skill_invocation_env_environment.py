@@ -15,6 +15,7 @@ from openenv.core.env_server.types import State
 
 from models import SkillInvocationAction, SkillInvocationObservation, SkillInvocationState
 from task_bank import TASK_BANK, SKILL_BANK
+from task_generator import TaskGenerator
 
 
 MAX_INVOCATIONS = 3
@@ -33,12 +34,15 @@ class SkillInvocationEnvironment(Environment):
 
     SUPPORTS_CONCURRENT_SESSIONS: bool = True
 
-    def __init__(self):
+    def __init__(self, use_procedural: bool = False, procedural_seed: int = 0):
         super().__init__()
         self._state = SkillInvocationState(episode_id=str(uuid4()), step_count=0)
         self._current_task = None
         self._catalog_skill_ids: list[str] = []
         self._messages: list[str] = []
+        self._use_procedural = use_procedural
+        self._task_generator = TaskGenerator(seed=procedural_seed) if use_procedural else None
+        self._episode_skills: dict = {}  # skills for current episode
 
     def reset(
         self,
@@ -50,8 +54,17 @@ class SkillInvocationEnvironment(Environment):
         if seed is not None:
             random.seed(seed)
 
-        # Pick a random task
-        task = random.choice(TASK_BANK)
+        if self._use_procedural and self._task_generator:
+            # Generate a procedural task
+            gen_seed = seed if seed is not None else random.randint(0, 2**31)
+            result = self._task_generator.generate_with_seed(gen_seed)
+            task = result["task"]
+            self._episode_skills = result["skills"]
+        else:
+            # Pick a random static task
+            task = random.choice(TASK_BANK)
+            self._episode_skills = SKILL_BANK
+
         self._current_task = task
 
         # Build catalog: relevant + distractor skills, shuffled
@@ -62,7 +75,7 @@ class SkillInvocationEnvironment(Environment):
         # Build catalog descriptions (short only, no full content)
         skill_catalog = []
         for sid in catalog_ids:
-            skill = SKILL_BANK[sid]
+            skill = self._episode_skills[sid]
             skill_catalog.append({
                 "id": sid,
                 "name": skill["name"],
@@ -138,7 +151,7 @@ class SkillInvocationEnvironment(Environment):
             self._messages.append("No remaining invocations. Submit your answer.")
             return self._make_observation(skill_content=None, reward=0.0, done=False)
 
-        if skill_id not in SKILL_BANK:
+        if skill_id not in self._episode_skills:
             self._messages.append(f"Unknown skill_id: {skill_id}")
             return self._make_observation(skill_content=None, reward=0.0, done=False)
 
@@ -151,8 +164,8 @@ class SkillInvocationEnvironment(Environment):
         if skill_id not in self._state.skills_invoked:
             self._state.skills_invoked.append(skill_id)
 
-        full_content = SKILL_BANK[skill_id]["full_content"]
-        skill_name = SKILL_BANK[skill_id]["name"]
+        full_content = self._episode_skills[skill_id]["full_content"]
+        skill_name = self._episode_skills[skill_id]["name"]
         self._messages.append(
             f"Invoked skill '{skill_name}' ({skill_id}). "
             f"Remaining invocations: {self._state.remaining_invocations}"
@@ -224,10 +237,9 @@ class SkillInvocationEnvironment(Environment):
         task = self._current_task
         catalog = []
         if task:
-            catalog_ids = list(task["relevant_skills"]) + list(task["distractor_skills"])
             for sid in self._catalog_skill_ids:
-                if sid in SKILL_BANK:
-                    skill = SKILL_BANK[sid]
+                if sid in self._episode_skills:
+                    skill = self._episode_skills[sid]
                     catalog.append({
                         "id": sid,
                         "name": skill["name"],
