@@ -248,6 +248,211 @@ def test_all_tasks_have_valid_skills():
     print(f"[PASS] test_all_tasks_have_valid_skills ({len(TASK_BANK)} tasks verified)")
 
 
+def test_verifier_task001_correct_code_passes():
+    """Verify task_001 exec verifier passes reference implementation from skill content."""
+    task = next(t for t in TASK_BANK if t["id"] == "task_001")
+    correct_code = '''
+import hmac, hashlib, base64
+
+def encode_zephyr_auth(api_key: str, timestamp: int) -> dict:
+    signing_string = f"{api_key}:{timestamp}"
+    digest = hmac.new(api_key.encode(), signing_string.encode(), hashlib.sha256).digest()
+    b64 = base64.b64encode(digest).decode()
+    return {"X-Zephyr-Auth": f"ZPH {api_key}:{b64}:{timestamp}"}
+'''
+    assert task["verifier"](correct_code), "Reference implementation should pass"
+    print("[PASS] test_verifier_task001_correct_code_passes")
+
+
+def test_verifier_task001_keywords_only_fails():
+    """Verify task_001 exec verifier rejects keyword-stuffed garbage."""
+    task = next(t for t in TASK_BANK if t["id"] == "task_001")
+    garbage = "hmac sha256 x-zephyr-auth base64 zph encode_zephyr_auth"
+    assert not task["verifier"](garbage), "Keyword-stuffed garbage should fail"
+    print("[PASS] test_verifier_task001_keywords_only_fails")
+
+
+def test_verifier_task001_wrong_format_fails():
+    """Verify task_001 rejects code with wrong header format."""
+    task = next(t for t in TASK_BANK if t["id"] == "task_001")
+    wrong_code = '''
+import hmac, hashlib, base64
+
+def encode_zephyr_auth(api_key: str, timestamp: int) -> dict:
+    # Wrong: using md5 instead of sha256
+    signing_string = f"{api_key}:{timestamp}"
+    digest = hmac.new(api_key.encode(), signing_string.encode(), hashlib.md5).digest()
+    b64 = base64.b64encode(digest).decode()
+    return {"X-Zephyr-Auth": f"ZPH {api_key}:{b64}:{timestamp}"}
+'''
+    assert not task["verifier"](wrong_code), "Wrong hash algorithm should fail"
+    print("[PASS] test_verifier_task001_wrong_format_fails")
+
+
+def test_verifier_task001_markdown_fenced():
+    """Verify task_001 exec verifier handles markdown-fenced code."""
+    task = next(t for t in TASK_BANK if t["id"] == "task_001")
+    fenced = '''```python
+import hmac, hashlib, base64
+
+def encode_zephyr_auth(api_key: str, timestamp: int) -> dict:
+    signing_string = f"{api_key}:{timestamp}"
+    digest = hmac.new(api_key.encode(), signing_string.encode(), hashlib.sha256).digest()
+    b64 = base64.b64encode(digest).decode()
+    return {"X-Zephyr-Auth": f"ZPH {api_key}:{b64}:{timestamp}"}
+```'''
+    assert task["verifier"](fenced), "Markdown-fenced correct code should pass"
+    print("[PASS] test_verifier_task001_markdown_fenced")
+
+
+def test_verifier_task002_correct_passes():
+    """Verify task_002 NovaBin header parser passes with correct implementation."""
+    task = next(t for t in TASK_BANK if t["id"] == "task_002")
+    correct_code = '''
+import struct
+
+def parse_novabin_header(data: bytes) -> dict:
+    magic = data[0:4]
+    assert magic == b'NOVB', f"Invalid magic: {magic}"
+    version = struct.unpack('>H', data[4:6])[0]
+    record_count = struct.unpack('>I', data[6:10])[0]
+    flags = struct.unpack('>H', data[10:12])[0]
+    checksum = struct.unpack('>I', data[12:16])[0]
+    return {
+        "version": version, "record_count": record_count,
+        "compressed": bool(flags & 1), "encrypted": bool(flags & 2),
+        "checksummed": bool(flags & 4), "checksum": checksum
+    }
+'''
+    assert task["verifier"](correct_code), "Correct NovaBin parser should pass"
+    print("[PASS] test_verifier_task002_correct_passes")
+
+
+def test_verifier_task002_keywords_only_fails():
+    """Verify task_002 rejects keyword-stuffed answer."""
+    task = next(t for t in TASK_BANK if t["id"] == "task_002")
+    garbage = "struct NOVB 0x4E4F5642 big-endian parse_novabin_header version record_count"
+    assert not task["verifier"](garbage), "Keyword-stuffed answer should fail"
+    print("[PASS] test_verifier_task002_keywords_only_fails")
+
+
+def test_verifier_task003_structural():
+    """Verify task_003 HelixLang structural verifier catches structure, not just keywords."""
+    task = next(t for t in TASK_BANK if t["id"] == "task_003")
+
+    # Good pseudocode
+    good = '''
+fn fetch_user(db: Database, user_id: str) -> result<User> {
+    let conn = try! db.connect().with_context("step", "connecting to database")
+
+    let user = match try! conn.query_user(user_id).with_context("step", "fetching user") {
+        Ok(u) => u,
+        Err(e) => {
+            if e.retryable {
+                return retry_with_backoff(|| conn.query_user(user_id), max=3, backoff=100ms)
+            }
+            helix.log.error(e)
+            return Err(HelixError.wrap(e, "HLX-DATA-2001", "user fetch failed"))
+        }
+    }
+
+    Ok(user)
+}
+'''
+    assert task["verifier"](good), "Proper HelixLang pseudocode should pass"
+
+    # Keyword dump (no structure)
+    keywords_only = "HLX-DATA try! with_context retry backoff helix.log.error result Ok Err"
+    assert not task["verifier"](keywords_only), "Keywords without structure should fail"
+
+    print("[PASS] test_verifier_task003_structural")
+
+
+def test_verifier_task004_yaml_structure():
+    """Verify task_004 ArcDeploy YAML verifier checks structure."""
+    task = next(t for t in TASK_BANK if t["id"] == "task_004")
+
+    good_yaml = '''```yaml
+canary:
+  phases:
+    - name: shadow
+      traffic_pct: 0
+      duration_min: 5
+      metrics_gate: error_rate < 0.01
+    - name: canary_1
+      traffic_pct: 5
+      duration_min: 10
+      metrics_gate: p99_latency_ms < 200 AND error_rate < 0.005
+    - name: canary_2
+      traffic_pct: 25
+      duration_min: 15
+      metrics_gate: p99_latency_ms < 250 AND error_rate < 0.005
+    - name: canary_3
+      traffic_pct: 50
+      duration_min: 20
+      metrics_gate: p99_latency_ms < 300 AND error_rate < 0.01
+    - name: full
+      traffic_pct: 100
+      duration_min: 0
+  rollback:
+    auto: true
+    on_metric_breach: immediate
+    cooldown_min: 30
+```'''
+    assert task["verifier"](good_yaml), "Valid ArcDeploy YAML should pass"
+
+    # Only keywords, no YAML
+    keywords = "shadow canary_1 traffic_pct metrics_gate error_rate rollback auto: true"
+    assert not task["verifier"](keywords), "Keywords-only should fail YAML verifier"
+
+    print("[PASS] test_verifier_task004_yaml_structure")
+
+
+def test_verifier_task008_record_parser():
+    """Verify task_008 NovaBin record parser with exec verifier."""
+    task = next(t for t in TASK_BANK if t["id"] == "task_008")
+
+    correct_code = '''
+import struct
+
+def parse_novabin_record(data: bytes, offset: int) -> tuple:
+    fields = {}
+    field_count = struct.unpack('>H', data[offset:offset+2])[0]
+    offset += 2
+
+    for _ in range(field_count):
+        type_tag = data[offset]
+        offset += 1
+
+        name_len = struct.unpack('>H', data[offset:offset+2])[0]
+        offset += 2
+        field_name = data[offset:offset+name_len].decode('utf-8')
+        offset += name_len
+
+        val_len = struct.unpack('>I', data[offset:offset+4])[0]
+        offset += 4
+        val_data = data[offset:offset+val_len]
+        offset += val_len
+
+        if type_tag == 0x01:  # int32
+            fields[field_name] = struct.unpack('>i', val_data)[0]
+        elif type_tag == 0x02:  # float64
+            fields[field_name] = struct.unpack('>d', val_data)[0]
+        elif type_tag == 0x03:  # string
+            fields[field_name] = val_data.decode('utf-8')
+        elif type_tag == 0x04:  # bool
+            fields[field_name] = val_data[0] != 0
+
+    return (fields, offset)
+'''
+    assert task["verifier"](correct_code), "Correct record parser should pass"
+
+    keywords = "struct 0x01 0x02 0x03 0x04 uint16 utf-8 parse_novabin_record"
+    assert not task["verifier"](keywords), "Keywords should fail exec verifier"
+
+    print("[PASS] test_verifier_task008_record_parser")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("Skill Invocation Environment - Local Tests")
@@ -264,6 +469,16 @@ if __name__ == "__main__":
         test_distractor_penalty,
         test_state_property,
         test_all_tasks_have_valid_skills,
+        # Verifier-specific tests
+        test_verifier_task001_correct_code_passes,
+        test_verifier_task001_keywords_only_fails,
+        test_verifier_task001_wrong_format_fails,
+        test_verifier_task001_markdown_fenced,
+        test_verifier_task002_correct_passes,
+        test_verifier_task002_keywords_only_fails,
+        test_verifier_task003_structural,
+        test_verifier_task004_yaml_structure,
+        test_verifier_task008_record_parser,
     ]
 
     passed = 0

@@ -4,22 +4,321 @@ Task and Skill Bank for the Skill Invocation Environment.
 Contains 10 synthetic task/skill pairs covering fictional APIs, data formats,
 coding standards, deployment procedures, and query languages. Each task is
 genuinely impossible without reading the corresponding skill content.
+
+Verifiers use code execution and structural validation — not keyword matching.
 """
 
+import binascii
+import hashlib
+import hmac
+import base64
+import re
+import struct
 from typing import Callable
 
+try:
+    import yaml as _yaml
+    HAS_YAML = True
+except ImportError:
+    HAS_YAML = False
 
-def _make_verifier(required: list[str], forbidden: list[str] | None = None) -> Callable[[str], bool]:
-    """Create a keyword-based verifier."""
+
+# ---------------------------------------------------------------------------
+# Verifier helpers
+# ---------------------------------------------------------------------------
+
+def _strip_markdown_fences(code: str) -> str:
+    """Remove markdown code fences if present."""
+    code = code.strip()
+    # Match ```python ... ``` or ``` ... ```
+    match = re.search(r'```(?:python)?\s*\n(.*?)```', code, re.DOTALL)
+    if match:
+        return match.group(1)
+    # Also handle case where entire answer is fenced
+    if code.startswith("```"):
+        lines = code.split("\n")
+        # Remove first and last fence lines
+        lines = [l for l in lines if not l.strip().startswith("```")]
+        return "\n".join(lines)
+    return code
+
+
+_SAFE_IMPORTS = "import hmac, hashlib, base64, struct, json, re, binascii, math"
+
+
+def _exec_verifier(func_name: str, test_cases: list[dict]) -> Callable[[str], bool]:
+    """
+    Execute the agent's code, extract func_name, run test_cases.
+
+    Each test_case: {"args": [...], "kwargs": {...}, "check": callable}
+    where check(result) -> bool.
+    """
     def verify(answer: str) -> bool:
-        lower = answer.lower()
-        if not all(kw.lower() in lower for kw in required):
+        try:
+            code = _strip_markdown_fences(answer)
+            namespace: dict = {}
+            exec(_SAFE_IMPORTS, namespace)
+            exec(code, namespace)
+
+            if func_name not in namespace:
+                return False
+
+            func = namespace[func_name]
+            for tc in test_cases:
+                result = func(*tc.get("args", []), **tc.get("kwargs", {}))
+                if not tc["check"](result):
+                    return False
+            return True
+        except Exception:
             return False
-        if forbidden and any(kw.lower() in lower for kw in forbidden):
-            return False
-        return True
     return verify
 
+
+def _structural_verifier(checks: list[Callable[[str], bool]]) -> Callable[[str], bool]:
+    """All structural checks must pass."""
+    def verify(answer: str) -> bool:
+        return all(check(answer) for check in checks)
+    return verify
+
+
+def _multi_part_verifier(part_checks: list[Callable[[str], bool]]) -> Callable[[str], bool]:
+    """Verify answer has multiple parts, each passing its check."""
+    def verify(answer: str) -> bool:
+        return all(check(answer) for check in part_checks)
+    return verify
+
+
+# ---------------------------------------------------------------------------
+# Pre-computed test data for exec verifiers
+# ---------------------------------------------------------------------------
+
+# task_001: expected Zephyr-3 auth outputs
+def _expected_zephyr_auth(api_key: str, timestamp: int) -> dict:
+    signing_string = f"{api_key}:{timestamp}"
+    digest = hmac.new(api_key.encode(), signing_string.encode(), hashlib.sha256).digest()
+    b64 = base64.b64encode(digest).decode()
+    return {"X-Zephyr-Auth": f"ZPH {api_key}:{b64}:{timestamp}"}
+
+
+_ZEPHYR_TEST_CASES = [
+    {
+        "args": ["test_key_123", 1700000000],
+        "check": lambda result: (
+            isinstance(result, dict)
+            and "X-Zephyr-Auth" in result
+            and result == _expected_zephyr_auth("test_key_123", 1700000000)
+        ),
+    },
+    {
+        "args": ["another_key", 1700000001],
+        "check": lambda result: (
+            isinstance(result, dict)
+            and "X-Zephyr-Auth" in result
+            and result == _expected_zephyr_auth("another_key", 1700000001)
+        ),
+    },
+    {
+        "args": ["k", 0],
+        "check": lambda result: (
+            isinstance(result, dict)
+            and "X-Zephyr-Auth" in result
+            and result["X-Zephyr-Auth"].startswith("ZPH k:")
+            and result["X-Zephyr-Auth"].endswith(":0")
+        ),
+    },
+]
+
+# task_002: NovaBin header test data
+_NOVABIN_HEADER_RAW = (
+    b'NOVB'                         # magic
+    + struct.pack('>H', 0x0201)     # version 2.1
+    + struct.pack('>I', 42)         # 42 records
+    + struct.pack('>H', 0b101)      # compressed + checksummed (bits 0 and 2)
+)
+_NOVABIN_HEADER_CRC = binascii.crc32(_NOVABIN_HEADER_RAW) & 0xFFFFFFFF
+_NOVABIN_HEADER = _NOVABIN_HEADER_RAW + struct.pack('>I', _NOVABIN_HEADER_CRC)
+
+# Second test header: no flags, 1 record
+_NOVABIN_HEADER2_RAW = (
+    b'NOVB'
+    + struct.pack('>H', 0x0201)
+    + struct.pack('>I', 1)
+    + struct.pack('>H', 0)  # no flags
+)
+_NOVABIN_HEADER2_CRC = binascii.crc32(_NOVABIN_HEADER2_RAW) & 0xFFFFFFFF
+_NOVABIN_HEADER2 = _NOVABIN_HEADER2_RAW + struct.pack('>I', _NOVABIN_HEADER2_CRC)
+
+_NOVABIN_HEADER_TEST_CASES = [
+    {
+        "args": [_NOVABIN_HEADER],
+        "check": lambda r: (
+            isinstance(r, dict)
+            and r.get("version") in (0x0201, 513)
+            and r.get("record_count") == 42
+            and r.get("compressed") is True
+            and r.get("encrypted") is False
+            and r.get("checksummed") is True
+        ),
+    },
+    {
+        "args": [_NOVABIN_HEADER2],
+        "check": lambda r: (
+            isinstance(r, dict)
+            and r.get("record_count") == 1
+            and r.get("compressed") is False
+            and r.get("encrypted") is False
+            and r.get("checksummed") is False
+        ),
+    },
+]
+
+# task_008: NovaBin record test data
+def _build_test_record() -> bytes:
+    """Build a test record: 2 fields — int32 'age'=25, string 'name'='Alice'."""
+    buf = bytearray()
+    buf += struct.pack('>H', 2)  # field count = 2
+
+    # Field 1: int32, name="age", value=25
+    buf += bytes([0x01])  # type tag int32
+    name1 = b"age"
+    buf += struct.pack('>H', len(name1))
+    buf += name1
+    val1 = struct.pack('>i', 25)
+    buf += struct.pack('>I', len(val1))
+    buf += val1
+
+    # Field 2: string, name="name", value="Alice"
+    buf += bytes([0x03])  # type tag string
+    name2 = b"name"
+    buf += struct.pack('>H', len(name2))
+    buf += name2
+    val2 = b"Alice"
+    buf += struct.pack('>I', len(val2))
+    buf += val2
+
+    return bytes(buf)
+
+
+def _build_test_record_2() -> bytes:
+    """Build a test record: 1 field — bool 'active'=True."""
+    buf = bytearray()
+    buf += struct.pack('>H', 1)
+
+    buf += bytes([0x04])  # type tag bool
+    name = b"active"
+    buf += struct.pack('>H', len(name))
+    buf += name
+    val = bytes([1])  # True
+    buf += struct.pack('>I', len(val))
+    buf += val
+
+    return bytes(buf)
+
+
+_NOVABIN_RECORD = _build_test_record()
+_NOVABIN_RECORD_2 = _build_test_record_2()
+
+_NOVABIN_RECORD_TEST_CASES = [
+    {
+        "args": [_NOVABIN_RECORD, 0],
+        "check": lambda r: (
+            isinstance(r, tuple) and len(r) == 2
+            and isinstance(r[0], dict)
+            and r[0].get("age") == 25
+            and r[0].get("name") == "Alice"
+            and isinstance(r[1], int) and r[1] == len(_NOVABIN_RECORD)
+        ),
+    },
+    {
+        "args": [_NOVABIN_RECORD_2, 0],
+        "check": lambda r: (
+            isinstance(r, tuple) and len(r) == 2
+            and isinstance(r[0], dict)
+            and r[0].get("active") is True
+            and isinstance(r[1], int) and r[1] == len(_NOVABIN_RECORD_2)
+        ),
+    },
+]
+
+
+# ---------------------------------------------------------------------------
+# YAML-based verifier for ArcDeploy config
+# ---------------------------------------------------------------------------
+
+def _verify_arcdeploy_yaml(answer: str) -> bool:
+    """Verify ArcDeploy canary config via YAML parsing + structural checks."""
+    try:
+        # Extract YAML block if wrapped in markdown fences
+        yaml_text = answer
+        if '```' in answer:
+            blocks = re.findall(r'```(?:yaml)?\s*\n(.*?)```', answer, re.DOTALL)
+            if blocks:
+                yaml_text = blocks[0]
+
+        if HAS_YAML:
+            config = _yaml.safe_load(yaml_text)
+            if not isinstance(config, dict):
+                return False
+
+            canary = config.get("canary", {})
+            phases = canary.get("phases", [])
+
+            if len(phases) < 5:
+                return False
+
+            # First phase must be shadow with 0% traffic
+            if phases[0].get("name") != "shadow" or phases[0].get("traffic_pct") != 0:
+                return False
+
+            # Last phase must be 100%
+            if phases[-1].get("traffic_pct") != 100:
+                return False
+
+            # Traffic must be monotonically increasing
+            traffic = [p.get("traffic_pct", 0) for p in phases]
+            if traffic != sorted(traffic):
+                return False
+
+            # Must have metrics gates on non-100% phases
+            for p in phases:
+                if p.get("traffic_pct", 0) < 100 and "metrics_gate" not in p:
+                    return False
+
+            # Must have rollback config with auto: true
+            rollback = canary.get("rollback", {})
+            if not rollback.get("auto"):
+                return False
+
+            return True
+        else:
+            # Fallback: structural regex checks if yaml not installed
+            return _arcdeploy_structural_fallback(answer)
+    except Exception:
+        return False
+
+
+def _arcdeploy_structural_fallback(answer: str) -> bool:
+    """Structural fallback for ArcDeploy when yaml isn't available."""
+    checks = [
+        # Has shadow phase with traffic_pct: 0
+        lambda a: bool(re.search(r'name:\s*shadow', a)) and bool(re.search(r'traffic_pct:\s*0\b', a)),
+        # Has at least canary_1 phase
+        lambda a: bool(re.search(r'name:\s*canary_1', a)),
+        # Has full phase with traffic_pct: 100
+        lambda a: bool(re.search(r'traffic_pct:\s*100', a)),
+        # Has metrics gates with error_rate
+        lambda a: bool(re.search(r'metrics_gate:.*error_rate', a)),
+        # Has rollback with auto: true
+        lambda a: bool(re.search(r'auto:\s*true', a, re.IGNORECASE)),
+        # Has at least 5 phase entries
+        lambda a: len(re.findall(r'-\s*name:', a)) >= 5,
+    ]
+    return all(c(answer) for c in checks)
+
+
+# ---------------------------------------------------------------------------
+# Skill Bank
+# ---------------------------------------------------------------------------
 
 SKILL_BANK: dict[str, dict] = {
     # --- Zephyr-3 API domain ---
@@ -458,8 +757,12 @@ flux metrics user_activity --window 1h
 }
 
 
+# ---------------------------------------------------------------------------
+# Task Bank
+# ---------------------------------------------------------------------------
+
 TASK_BANK: list[dict] = [
-    # --- Task 1: Zephyr-3 Auth (Easy) ---
+    # --- Task 1: Zephyr-3 Auth (Easy) --- exec verifier
     {
         "id": "task_001",
         "difficulty": "easy",
@@ -471,11 +774,9 @@ TASK_BANK: list[dict] = [
         ),
         "relevant_skills": ["skill_001"],
         "distractor_skills": ["skill_002", "skill_003"],
-        "verifier": _make_verifier(
-            required=["hmac", "sha256", "x-zephyr-auth", "base64", "zph"],
-        ),
+        "verifier": _exec_verifier("encode_zephyr_auth", _ZEPHYR_TEST_CASES),
     },
-    # --- Task 2: NovaBin Parser (Easy) ---
+    # --- Task 2: NovaBin Header Parser (Easy) --- exec verifier
     {
         "id": "task_002",
         "difficulty": "easy",
@@ -487,12 +788,9 @@ TASK_BANK: list[dict] = [
         ),
         "relevant_skills": ["skill_004"],
         "distractor_skills": ["skill_005", "skill_017"],
-        "verifier": _make_verifier(
-            required=["struct", "novb", "0x4e4f5642", "big-endian"],
-            forbidden=None,
-        ),
+        "verifier": _exec_verifier("parse_novabin_header", _NOVABIN_HEADER_TEST_CASES),
     },
-    # --- Task 3: HelixLang Error Handling (Easy) ---
+    # --- Task 3: HelixLang Error Handling (Easy) --- structural verifier
     {
         "id": "task_003",
         "difficulty": "easy",
@@ -505,11 +803,22 @@ TASK_BANK: list[dict] = [
         ),
         "relevant_skills": ["skill_006"],
         "distractor_skills": ["skill_007", "skill_008"],
-        "verifier": _make_verifier(
-            required=["hlx-", "try!", "with_context", "retry", "helix.log.error"],
-        ),
+        "verifier": _structural_verifier([
+            # Has a correctly-formatted error code (HLX-CATEGORY-NNNN)
+            lambda a: bool(re.search(r'HLX-(IO|NET|AUTH|DATA|SYS)-\d{4}', a)),
+            # Uses try! operator in a call context (not just the word)
+            lambda a: bool(re.search(r'try!\s*\w+', a)),
+            # Has context propagation with with_context call
+            lambda a: bool(re.search(r'with_context\s*\(', a)),
+            # Has retry logic referencing backoff
+            lambda a: bool(re.search(r'retry.*backoff|retry_with_backoff', a, re.IGNORECASE)),
+            # Has error logging via helix.log.error
+            lambda a: bool(re.search(r'helix\.log\.error\s*\(', a)),
+            # Has Result monad pattern (Ok or Err)
+            lambda a: bool(re.search(r'result\s*<|Ok\s*\(|Err\s*\(', a)),
+        ]),
     },
-    # --- Task 4: ArcDeploy Canary Config (Easy) ---
+    # --- Task 4: ArcDeploy Canary Config (Easy) --- YAML verifier
     {
         "id": "task_004",
         "difficulty": "easy",
@@ -521,11 +830,9 @@ TASK_BANK: list[dict] = [
         ),
         "relevant_skills": ["skill_009"],
         "distractor_skills": ["skill_010", "skill_011"],
-        "verifier": _make_verifier(
-            required=["shadow", "canary_1", "traffic_pct", "metrics_gate", "error_rate", "rollback", "auto: true"],
-        ),
+        "verifier": _verify_arcdeploy_yaml,
     },
-    # --- Task 5: CrystalQL Temporal Query (Easy) ---
+    # --- Task 5: CrystalQL Temporal Query (Easy) --- structural verifier
     {
         "id": "task_005",
         "difficulty": "easy",
@@ -536,11 +843,25 @@ TASK_BANK: list[dict] = [
         ),
         "relevant_skills": ["skill_012"],
         "distractor_skills": ["skill_013", "skill_005"],
-        "verifier": _make_verifier(
-            required=["temporal_avg", "temporal_max", "between", "window tumbling", "interval"],
-        ),
+        "verifier": _structural_verifier([
+            # Uses TEMPORAL_AVG function with parenthesized args
+            lambda a: bool(re.search(r'TEMPORAL_AVG\s*\(', a, re.IGNORECASE)),
+            # Uses TEMPORAL_MAX function with parenthesized args
+            lambda a: bool(re.search(r'TEMPORAL_MAX\s*\(', a, re.IGNORECASE)),
+            # Has BETWEEN clause with two timestamps (2024 dates)
+            lambda a: bool(re.search(
+                r'BETWEEN\s+TIMESTAMP\s+[\'"]2024-01-01.*AND\s+TIMESTAMP\s+[\'"]2024-03-01',
+                a, re.IGNORECASE | re.DOTALL,
+            )),
+            # Has WINDOW TUMBLING with an interval
+            lambda a: bool(re.search(r'WINDOW\s+TUMBLING\s*\(', a, re.IGNORECASE)),
+            # Has GROUP BY product_id
+            lambda a: bool(re.search(r'GROUP\s+BY\s+product_id', a, re.IGNORECASE)),
+            # Uses INTERVAL for the window duration
+            lambda a: bool(re.search(r"INTERVAL\s+['\"]?1\s*day", a, re.IGNORECASE)),
+        ]),
     },
-    # --- Task 6: VaultSync Rotation Script (Medium) ---
+    # --- Task 6: VaultSync Rotation Script (Medium) --- structural verifier
     {
         "id": "task_006",
         "difficulty": "medium",
@@ -553,19 +874,31 @@ TASK_BANK: list[dict] = [
         ),
         "relevant_skills": ["skill_014"],
         "distractor_skills": ["skill_015", "skill_003"],
-        "verifier": _make_verifier(
-            required=[
-                "vault-sync rotate prepare",
-                "vault-sync rotate activate",
-                "vault-sync rotate verify",
-                "vault-sync rotate commit",
-                "vault-sync rotate rollback",
-                "grace-period",
-                "probe-endpoint",
-            ],
-        ),
+        "verifier": _structural_verifier([
+            # Commands appear in correct lifecycle order: prepare < activate < verify < commit
+            lambda a: (
+                all(cmd in a for cmd in [
+                    'vault-sync rotate prepare',
+                    'vault-sync rotate activate',
+                    'vault-sync rotate verify',
+                    'vault-sync rotate commit',
+                ])
+                and a.index('rotate prepare') < a.index('rotate activate')
+                < a.index('rotate verify') < a.index('rotate commit')
+            ),
+            # Has rollback command
+            lambda a: 'vault-sync rotate rollback' in a,
+            # Has grace-period flag
+            lambda a: bool(re.search(r'--grace-period', a)),
+            # Has probe-endpoint flag
+            lambda a: bool(re.search(r'--probe-endpoint', a)),
+            # Has conditional logic for error handling
+            lambda a: bool(re.search(r'\bif\b|\bthen\b|\$\?|&&\s*vault-sync|\|\|', a)),
+            # References the correct secret path
+            lambda a: 'db/prod/password' in a,
+        ]),
     },
-    # --- Task 7: FluxStream Pipeline (Medium) ---
+    # --- Task 7: FluxStream Pipeline (Medium) --- structural verifier
     {
         "id": "task_007",
         "difficulty": "medium",
@@ -580,21 +913,26 @@ TASK_BANK: list[dict] = [
         ),
         "relevant_skills": ["skill_016"],
         "distractor_skills": ["skill_017", "skill_018"],
-        "verifier": _make_verifier(
-            required=[
-                "pipeline",
-                "source kafka",
-                "filter",
-                "window",
-                "tumbling",
-                "branch",
-                "sink",
-                "error_handler",
-                "dead_letter",
-            ],
-        ),
+        "verifier": _structural_verifier([
+            # Pipeline declaration with correct name
+            lambda a: bool(re.search(r'pipeline\s+order_analytics\s*\{', a)),
+            # Source is kafka with correct topic
+            lambda a: bool(re.search(r'source\s+kafka\s*\(\s*["\']order-events', a)),
+            # Has filter referencing completed and refunded
+            lambda a: bool(re.search(r'filter\s*\(', a)) and 'completed' in a and 'refunded' in a,
+            # Has tumbling window with 5m
+            lambda a: bool(re.search(r'window\s*\(\s*tumbling\s*=\s*5m', a)),
+            # Has group_by with product_id
+            lambda a: bool(re.search(r'group_by.*product_id', a)),
+            # Has branch with conditional routing to sink
+            lambda a: bool(re.search(r'branch\s*\{', a)) and 'sink' in a,
+            # Has error_handler block with dead_letter
+            lambda a: bool(re.search(r'error_handler\s*\{', a)) and 'dead_letter' in a,
+            # Has aggregation (count and sum)
+            lambda a: bool(re.search(r'\bcount\b', a, re.IGNORECASE)) and bool(re.search(r'\bsum\b', a, re.IGNORECASE)),
+        ]),
     },
-    # --- Task 8: NovaBin Record Parser (Medium) ---
+    # --- Task 8: NovaBin Record Parser (Medium) --- exec verifier
     {
         "id": "task_008",
         "difficulty": "medium",
@@ -607,11 +945,9 @@ TASK_BANK: list[dict] = [
         ),
         "relevant_skills": ["skill_004"],
         "distractor_skills": ["skill_005", "skill_013"],
-        "verifier": _make_verifier(
-            required=["struct", "0x01", "0x02", "0x03", "0x04", "uint16", "utf-8"],
-        ),
+        "verifier": _exec_verifier("parse_novabin_record", _NOVABIN_RECORD_TEST_CASES),
     },
-    # --- Task 9: CrystalQL + VaultSync Integration (Hard) ---
+    # --- Task 9: CrystalQL + VaultSync Integration (Hard) --- multi-part verifier
     {
         "id": "task_009",
         "difficulty": "hard",
@@ -626,19 +962,22 @@ TASK_BANK: list[dict] = [
         ),
         "relevant_skills": ["skill_012", "skill_014"],
         "distractor_skills": ["skill_013", "skill_015", "skill_010"],
-        "verifier": _make_verifier(
-            required=[
-                "temporal join",
-                "as of",
-                "vault-sync",
-                "rotation_interval",
-                "on_rotate",
-                "secret",
-                "grace_period",
-            ],
-        ),
+        "verifier": _multi_part_verifier([
+            # Part 1: CrystalQL temporal join query
+            lambda a: bool(re.search(r'TEMPORAL\s+JOIN', a, re.IGNORECASE)),
+            lambda a: bool(re.search(r'AS\s+OF\s+(TIMESTAMP|INTERVAL)', a, re.IGNORECASE)),
+            lambda a: bool(re.search(r'\bON\b.*\bid\b', a, re.IGNORECASE)),
+            # Part 2: VaultSync rotation policy YAML
+            lambda a: bool(re.search(r'rotation_interval:\s*7d', a)),
+            lambda a: bool(re.search(r'grace_period:', a)),
+            lambda a: bool(re.search(r'http_probe|probe.*endpoint', a, re.IGNORECASE)),
+            lambda a: bool(re.search(r'slack:', a, re.IGNORECASE)),
+            # Part 3: Python SDK with on_rotate callback
+            lambda a: bool(re.search(r'SecretClient|secret\s*\(', a)),
+            lambda a: bool(re.search(r'on_rotate|\.on_rotate', a)),
+        ]),
     },
-    # --- Task 10: Full ArcDeploy + FluxStream Monitoring (Hard) ---
+    # --- Task 10: Full ArcDeploy + FluxStream Monitoring (Hard) --- multi-part verifier
     {
         "id": "task_010",
         "difficulty": "hard",
@@ -654,19 +993,21 @@ TASK_BANK: list[dict] = [
         ),
         "relevant_skills": ["skill_009", "skill_016"],
         "distractor_skills": ["skill_010", "skill_011", "skill_018"],
-        "verifier": _make_verifier(
-            required=[
-                "arc deploy",
-                "canary",
-                "shadow",
-                "metrics_gate",
-                "pipeline deploy_monitor",
-                "source kafka",
-                "window",
-                "error_rate",
-                "branch",
-                "flux deploy",
-            ],
-        ),
+        "verifier": _multi_part_verifier([
+            # Part 1: ArcDeploy config — shadow phase + metrics gates
+            lambda a: bool(re.search(r'name:\s*shadow', a)),
+            lambda a: len(re.findall(r'-\s*name:', a)) >= 5,
+            lambda a: bool(re.search(r'metrics_gate:.*latency', a, re.IGNORECASE)),
+            lambda a: bool(re.search(r'metrics_gate:.*error_rate', a, re.IGNORECASE)),
+            lambda a: bool(re.search(r'traffic_pct:\s*100', a)),
+            # Part 2: FluxStream pipeline with correct name
+            lambda a: bool(re.search(r'pipeline\s+deploy_monitor\s*\{', a)),
+            lambda a: bool(re.search(r'source\s+kafka\s*\(', a)),
+            lambda a: bool(re.search(r'window\s*\(\s*tumbling\s*=\s*1m', a)),
+            lambda a: bool(re.search(r'branch\s*\{', a)) and bool(re.search(r'error_rate', a)),
+            # Part 3: CLI commands for both tools
+            lambda a: bool(re.search(r'arc\s+deploy\s+(init|start)', a)),
+            lambda a: bool(re.search(r'flux\s+deploy', a)),
+        ]),
     },
 ]
