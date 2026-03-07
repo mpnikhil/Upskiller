@@ -107,7 +107,7 @@ docker run -p 8000:8000 skill-invocation-env
 
 ## Task Domains
 
-The environment includes 10 synthetic tasks across 6 fictional domains:
+The environment includes 13 tasks (10 synthetic + 3 from SkillsBench) across 9 domains:
 
 | Domain | Skills | Tasks | Difficulty |
 |--------|--------|-------|------------|
@@ -120,6 +120,21 @@ The environment includes 10 synthetic tasks across 6 fictional domains:
 | FluxStream | Event Processing, Connectors, Schema | 1 | Medium |
 | Cross-domain | CrystalQL + VaultSync | 1 | Hard |
 | Cross-domain | ArcDeploy + FluxStream | 1 | Hard |
+| Flood Detection* | Flood Detection, USGS Data, NWS Thresholds | 1 | Easy |
+| Economics Detrending* | HP Filter, Pandas, Matplotlib | 1 | Medium |
+| Dialogue Parsing* | Dialogue Graph, Graphviz, JSON Schema | 1 | Medium |
+
+*Adapted from SkillsBench (see below).
+
+## SkillsBench Integration
+
+Three tasks are adapted from [SkillsBench](https://github.com/benchflow-ai/skillsbench) (Apache 2.0),
+the first benchmark for evaluating how well AI agents use skills. SkillsBench proved that
+agents fail to invoke skills ~56% of the time. Our environment provides the RL training
+ground to fix this.
+
+Adapted tasks use real SkillsBench skill content, distilled into our text-in/text-out
+Gymnasium format with deterministic code execution verifiers.
 
 ## Testing
 
@@ -134,12 +149,12 @@ skill_invocation_env/
 ├── __init__.py
 ├── models.py              # Pydantic Action/Observation/State
 ├── client.py              # SkillInvocationEnv(EnvClient)
-├── task_bank.py           # 10 synthetic tasks + 18 skills + verifiers
+├── task_bank.py           # 13 tasks + 27 skills + verifiers
 ├── README.md
 ├── openenv.yaml
 ├── pyproject.toml
 ├── train_demo.py          # Integration demo script
-├── test_env.py            # Local test suite (10 tests)
+├── test_env.py            # Local test suite (22 tests)
 └── server/
     ├── skill_invocation_env_environment.py  # Core Environment logic
     ├── app.py                               # FastAPI server

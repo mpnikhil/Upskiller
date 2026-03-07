@@ -1,9 +1,9 @@
 """
 Task and Skill Bank for the Skill Invocation Environment.
 
-Contains 10 synthetic task/skill pairs covering fictional APIs, data formats,
-coding standards, deployment procedures, and query languages. Each task is
-genuinely impossible without reading the corresponding skill content.
+Contains 10 synthetic task/skill pairs plus 3 tasks adapted from SkillsBench,
+covering fictional APIs, data formats, coding standards, deployment procedures,
+query languages, flood analysis, economics detrending, and dialogue parsing.
 
 Verifiers use code execution and structural validation — not keyword matching.
 """
@@ -1011,3 +1011,574 @@ TASK_BANK: list[dict] = [
         ]),
     },
 ]
+
+
+# ---------------------------------------------------------------------------
+# Tasks adapted from SkillsBench (https://github.com/benchflow-ai/skillsbench)
+# Apache 2.0 License. Skills content used with attribution.
+# Adapted for text-in/text-out OpenEnv Gymnasium-style environment.
+# ---------------------------------------------------------------------------
+
+# ---- SkillsBench Skills ----
+
+SKILL_BANK["skill_sb_001"] = {
+    "name": "Flood Detection Guide",
+    "short_description": "Detect flood events by comparing water levels to thresholds, aggregating data, and classifying severity.",
+    "full_content": """## Flood Detection Guide
+
+### Overview
+
+Flood detection involves comparing observed water levels against established flood stage thresholds. This guide covers how to process water level data and identify flood events.
+
+### Flood Stage Definition
+
+According to the National Weather Service, flood stage is the water level at which overflow of the natural banks begins to cause damage. A flood event occurs when:
+```
+water_level >= flood_stage_threshold
+```
+
+### Aggregating Instantaneous Data to Daily
+
+USGS instantaneous data is recorded at ~15-minute intervals. For flood detection, aggregate to daily maximum:
+```python
+# df is DataFrame from nwis.get_iv() with datetime index
+# gage_col is the column name containing water levels
+daily_max = df[gage_col].resample('D').max()
+```
+
+### Why Daily Maximum?
+
+| Aggregation | Use Case |
+|-------------|----------|
+| `max()` | Flood detection - captures peak water level |
+| `mean()` | Long-term trends - may miss short flood peaks |
+| `min()` | Low flow analysis |
+
+### Detecting Flood Days
+
+Compare daily maximum water level against flood threshold:
+```python
+flood_threshold = <threshold_from_nws>  # feet
+
+# Count days with flooding
+flood_days = (daily_max >= flood_threshold).sum()
+
+# Get specific dates with flooding
+flood_dates = daily_max[daily_max >= flood_threshold].index.tolist()
+```
+
+### Processing Multiple Stations
+```python
+flood_results = []
+
+for site_id, site_data in all_data.items():
+    daily_max = site_data['water_levels'].resample('D').max()
+    threshold = thresholds[site_id]['flood']
+
+    days_above = int((daily_max >= threshold).sum())
+
+    if days_above > 0:
+        flood_results.append({
+            'station_id': site_id,
+            'flood_days': days_above
+        })
+
+# Sort by flood days descending
+flood_results.sort(key=lambda x: x['flood_days'], reverse=True)
+```
+
+### Flood Severity Classification
+
+If multiple threshold levels are available:
+```python
+def classify_flood(water_level, thresholds):
+    if water_level >= thresholds['major']:
+        return 'major'
+    elif water_level >= thresholds['moderate']:
+        return 'moderate'
+    elif water_level >= thresholds['flood']:
+        return 'minor'
+    elif water_level >= thresholds['action']:
+        return 'action'
+    else:
+        return 'normal'
+```
+
+### Best Practices
+
+- Use daily maximum for flood detection to capture peaks
+- Ensure water level and threshold use same units (typically feet)
+- Only report stations with at least 1 flood day
+- Sort results by flood severity or duration for prioritization
+""",
+}
+
+SKILL_BANK["skill_sb_002"] = {
+    "name": "USGS Data Download Guide",
+    "short_description": "Download water level data from USGS using the dataretrieval Python package.",
+    "full_content": """## USGS Data Download Guide
+
+The `dataretrieval` package allows downloading water level data from USGS.
+
+```python
+from dataretrieval import nwis
+
+# Get instantaneous values (15-min intervals)
+df, meta = nwis.get_iv(
+    sites='<station_id>',
+    start='<start_date>',
+    end='<end_date>',
+    parameterCd='00065'
+)
+```
+
+Parameter codes: 00065 = Gage height (feet), 00060 = Discharge (cfs).
+Station IDs are 8-digit strings with leading zeros (e.g., '04119000').
+""",
+}
+
+SKILL_BANK["skill_sb_003"] = {
+    "name": "NWS Flood Threshold Lookup",
+    "short_description": "Look up flood stage thresholds from National Weather Service for USGS stations.",
+    "full_content": """## NWS Flood Thresholds
+
+The NWS maintains flood stage thresholds. Download from:
+```
+https://water.noaa.gov/resources/downloads/reports/nwps_all_gauges_report.csv
+```
+
+Key columns: `usgs id`, `flood stage`, `moderate flood stage`, `major flood stage`.
+Use the `flood stage` column as threshold. Filter out -9999 values.
+""",
+}
+
+SKILL_BANK["skill_sb_004"] = {
+    "name": "Time Series Detrending for Macroeconomic Analysis",
+    "short_description": "HP filter detrending techniques for business cycle analysis of economic time series.",
+    "full_content": """## Time Series Detrending for Macroeconomic Analysis
+
+This skill provides guidance on decomposing economic time series into trend and cyclical components, a fundamental technique in business cycle analysis.
+
+### The Hodrick-Prescott (HP) Filter
+
+The HP filter decomposes a time series into a trend component and a cyclical component. Given a time series y_t, it finds the trend tau_t that minimizes:
+
+  sum((y_t - tau_t)^2) + lambda * sum([(tau_{t+1} - tau_t) - (tau_t - tau_{t-1})]^2)
+
+### Choosing Lambda
+
+**Critical**: The choice of lambda depends on data frequency:
+
+| Data Frequency | Recommended lambda | Rationale |
+|----------------|-------------------|-----------|
+| Annual         | **100**           | Standard for yearly data |
+| Quarterly      | **1600**          | Hodrick-Prescott (1997) recommendation |
+| Monthly        | **14400**         | Ravn-Uhlig (2002) adjustment |
+
+**Common mistake**: Using lambda=1600 (quarterly default) for annual data.
+
+### Python Implementation
+
+```python
+from statsmodels.tsa.filters.hp_filter import hpfilter
+import numpy as np
+
+# Apply HP filter
+# Returns: (cyclical_component, trend_component)
+cycle, trend = hpfilter(data, lamb=100)  # For annual data
+```
+
+**Important**: The function parameter is `lamb` (not `lambda`, which is a Python keyword).
+
+### Log Transformation
+
+For most macroeconomic aggregates (GDP, consumption, investment), apply the natural logarithm **before** filtering:
+
+```python
+import numpy as np
+
+log_series = np.log(real_series)
+cycle, trend = hpfilter(log_series, lamb=100)
+
+# cycle now represents percentage deviations from trend
+```
+
+### Complete Workflow: Business Cycle Correlation
+
+```python
+import numpy as np
+from statsmodels.tsa.filters.hp_filter import hpfilter
+
+# Log transformation
+ln_consumption = np.log(real_consumption)
+ln_investment = np.log(real_investment)
+
+# HP filter with lambda=100 for annual data
+cycle_c, trend_c = hpfilter(ln_consumption, lamb=100)
+cycle_i, trend_i = hpfilter(ln_investment, lamb=100)
+
+# Compute correlation of cyclical components
+correlation = np.corrcoef(cycle_c, cycle_i)[0, 1]
+print(f"Business cycle correlation: {correlation:.5f}")
+```
+
+### Dependencies
+```bash
+pip install statsmodels pandas numpy
+```
+
+The HP filter is in `statsmodels.tsa.filters.hp_filter`.
+""",
+}
+
+SKILL_BANK["skill_sb_005"] = {
+    "name": "Pandas DataFrame Operations",
+    "short_description": "Common pandas operations for data manipulation, merging, and aggregation.",
+    "full_content": """## Pandas DataFrame Operations
+
+Common pandas patterns: `pd.read_csv()`, `df.merge()`, `df.groupby().agg()`, `df.pivot_table()`. Use `pd.to_numeric(errors='coerce')` for type conversion. Handle missing data with `df.fillna()` or `df.dropna()`.
+""",
+}
+
+SKILL_BANK["skill_sb_006"] = {
+    "name": "Matplotlib Time Series Visualization",
+    "short_description": "Plotting time series data and trends with matplotlib.",
+    "full_content": """## Matplotlib Time Series Visualization
+
+Plot time series with `plt.plot(dates, values)`. Add trend lines, annotations, and formatting. Use `fig, axes = plt.subplots()` for multi-panel plots. Save with `plt.savefig('output.png', dpi=150)`.
+""",
+}
+
+SKILL_BANK["skill_sb_007"] = {
+    "name": "Dialogue Graph Library",
+    "short_description": "Build, validate, and serialize dialogue graphs for branching narratives using Graph/Node/Edge classes.",
+    "full_content": """## Dialogue Graph Skill
+
+This skill provides a `dialogue_graph` module to build valid dialogue trees/graphs.
+
+### When to use
+- **Script Parsers**: Converting text to structured data
+- **Dialogue Editors**: Building tools to edit conversation flow
+- **Game Logic**: Traversing a dialogue tree
+
+### How to use
+
+```python
+from dialogue_graph import Graph, Node, Edge
+```
+
+#### The Graph Class
+```python
+graph = Graph()
+```
+
+#### Adding Nodes
+```python
+# Regular dialogue line
+graph.add_node(Node(id="Start", speaker="Guard", text="Halt!", type="line"))
+
+# Choice hub
+graph.add_node(Node(id="Choices", type="choice"))
+```
+
+#### Adding Edges
+```python
+# Simple transition
+graph.add_edge(Edge(source="Start", target="Choices"))
+
+# Choice transition (with text)
+graph.add_edge(Edge(source="Choices", target="End", text="1. Run away"))
+```
+
+#### Export
+```python
+data = graph.to_dict()
+# returns {"nodes": [...], "edges": [...]}
+```
+
+#### Validation
+```python
+errors = graph.validate()
+# Returns list of strings, e.g., ["Edge 'Start'->'Unk' points to missing node 'Unk'"]
+```
+
+#### Loading from JSON
+```python
+graph = Graph.from_dict({'nodes': [...], 'edges': [...]})
+```
+
+### Node format
+Each node is a dict with: `id` (str), `text` (str), `speaker` (str), `type` ("line" or "choice")
+
+### Edge format
+Each edge is a dict with: `from` (str), `to` (str), `text` (str)
+
+### Parsing Script Format
+The standard script format:
+```
+[SceneName]
+Speaker: Dialogue text. -> NextScene
+
+[ChoiceScene]
+1. Choice text -> TargetScene
+2. Another choice -> OtherTarget
+```
+
+Rules:
+- Lines starting with `[Name]` define scene nodes
+- If a scene has `Speaker: Text -> Target`, it is type="line" with that speaker
+- If a scene has numbered options (`1. Text -> Target`), it is type="choice"
+- The arrow `->` defines an edge from the current scene to the target
+- Choice edges include the choice text (e.g., "1. Choice text")
+- For line nodes, the edge text is empty or the dialogue text
+""",
+}
+
+SKILL_BANK["skill_sb_008"] = {
+    "name": "Graphviz DOT Format",
+    "short_description": "Generate graph visualizations using Graphviz DOT language.",
+    "full_content": """## Graphviz DOT Format
+
+Create directed graphs: `digraph G { A -> B; }`. Set node shapes with `[shape=diamond]`. Colors with `[color=blue]`. Use `rankdir=LR` for left-to-right layout. Render with `dot -Tpng graph.dot -o graph.png`.
+""",
+}
+
+SKILL_BANK["skill_sb_009"] = {
+    "name": "JSON Schema Validation",
+    "short_description": "Validate JSON data structures against schemas using jsonschema library.",
+    "full_content": """## JSON Schema Validation
+
+Use `jsonschema.validate(data, schema)` to check JSON structure. Define schemas with `type`, `properties`, `required`, `items`. Install: `pip install jsonschema`. Catches `ValidationError` on failure.
+""",
+}
+
+# ---- SkillsBench-adapted Test Data ----
+
+_SB_FLOOD_TEST_DATA = {
+    "daily_max_levels": {
+        "04124000": [15.2, 16.1, 15.8, 14.9, 15.5, 16.0, 15.3],
+        "04101800": [22.1, 23.5, 22.8, 24.1, 23.0, 21.9, 22.5],
+        "04097500": [10.5, 11.2, 10.8, 11.1, 10.3, 9.8, 9.5],
+        "04166500": [8.2, 8.5, 7.9, 7.8, 8.0, 7.5, 7.3],
+        "04999999": [5.0, 4.8, 5.1, 4.9, 5.0, 4.7, 4.6],
+    },
+    "flood_thresholds": {
+        "04124000": 15.0,
+        "04101800": 22.0,
+        "04097500": 10.5,
+        "04166500": 8.1,
+        "04999999": 6.0,
+    },
+}
+_SB_FLOOD_EXPECTED = {"04124000": 6, "04101800": 6, "04097500": 4, "04166500": 2}
+
+# Pre-computed HP filter test data (deterministic, seed=42)
+# Generated with: np.random.seed(42); n=50; trend=linspace(10,12,n);
+# cycle=0.05*sin(linspace(0,4*pi,n)); noise_a/b=0.01*randn(n);
+# series = exp(trend + [1|0.8]*cycle + noise)
+_SB_HP_SERIES_A = [
+    22136.146542207392, 23204.845943423705, 24652.79143953327,
+    26172.47083057089, 27002.39677592748, 28273.313580880793,
+    30051.396100901988, 31012.171288310117, 31766.445340494465,
+    33182.78309985593, 33887.64705958506, 34894.26280732681,
+    36149.52370863675, 36385.350397792274, 37514.59011964166,
+    39113.01687213975, 40212.14327686968, 42196.670687212085,
+    43297.26210449467, 44892.592298244555, 48303.64908257102,
+    49801.15821216017, 52508.42643350753, 54489.575008037566,
+    57974.245708500996, 61568.844301395045, 64117.839034819415,
+    68576.37200943612, 71392.08801561705, 75092.589894759,
+    78263.12445218801, 83583.20317625241, 85213.13757625608,
+    87323.09714571184, 91894.08758161688, 92786.56912352098,
+    96861.20170394408, 97480.13273428561, 100909.88166437816,
+    105506.58025009745, 109428.19143887387, 112516.26919621794,
+    116352.87005507768, 120827.19859243499, 124641.85636295384,
+    131502.23328916836, 138435.59870506602, 147916.42415706386,
+    154807.41309002193, 159910.50571503676,
+]
+_SB_HP_SERIES_B = [
+    22097.96583697866, 23089.002181075368, 24209.299982962977,
+    25755.231345447573, 27113.336616067252, 28331.828906180173,
+    29041.61942185999, 30382.41537568266, 31739.18190358319,
+    33080.971269261834, 33697.971409879494, 34882.03889214109,
+    35642.5482028925, 36717.31912567404, 38645.99707499506,
+    40129.947797790956, 40926.54825685394, 42889.14931129554,
+    44289.153022361395, 45687.121649986715, 48212.03616086788,
+    51085.192717671445, 52768.858896074795, 56354.155802272886,
+    56856.12876304818, 61928.90266241154, 64673.42412352394,
+    67709.05244322174, 71328.26917352251, 73157.81859575034,
+    77790.94757943293, 81527.23479593106, 85685.60547068984,
+    87078.29744266604, 89823.2654818476, 93051.57680422119,
+    97361.69347175729, 99800.53110013365, 102039.82705754046,
+    106419.91537764092, 109536.45736907546, 114426.94522822299,
+    116805.80714641871, 122008.49722830504, 127217.1275907411,
+    131648.90322204158, 140460.9679752306, 147465.45111253537,
+    154676.11432606063, 162373.437098354,
+]
+_SB_HP_EXPECTED_CORR = 0.62487
+
+_SB_DIALOGUE_TEST_SCRIPT = """[GateScene]
+Guard: Halt! State your name. -> NameChoice
+
+[NameChoice]
+1. I am Sir Aldric. -> KnightPath
+2. Just a traveler. -> TravelerPath
+
+[KnightPath]
+Captain: Welcome, knight! -> End
+
+[TravelerPath]
+Guard: Move along then. -> End
+
+[End]
+Narrator: The story continues...
+"""
+
+# ---- SkillsBench-adapted Tasks ----
+
+TASK_BANK.extend([
+    # --- task_sb_001: Flood Risk Analysis (Easy) --- exec verifier
+    {
+        "id": "task_sb_001",
+        "difficulty": "easy",
+        "source": "skillsbench",
+        "description": (
+            "Write a Python function called `detect_flood_days` that takes two arguments: "
+            "`daily_max_levels` (dict mapping station_id to list of daily maximum water "
+            "levels in feet) and `flood_thresholds` (dict mapping station_id to flood stage "
+            "threshold in feet). Return a dict mapping station_id to the number of days "
+            "where water level >= threshold. Only include stations with at least 1 flood day."
+        ),
+        "relevant_skills": ["skill_sb_001"],
+        "distractor_skills": ["skill_sb_002", "skill_sb_003"],
+        "verifier": _exec_verifier("detect_flood_days", [
+            {
+                "args": [
+                    _SB_FLOOD_TEST_DATA["daily_max_levels"],
+                    _SB_FLOOD_TEST_DATA["flood_thresholds"],
+                ],
+                "check": lambda r: (
+                    isinstance(r, dict)
+                    and r == _SB_FLOOD_EXPECTED
+                ),
+            },
+            # Edge case: empty input
+            {
+                "args": [{}, {}],
+                "check": lambda r: isinstance(r, dict) and len(r) == 0,
+            },
+            # Edge case: station with exactly threshold value (should count)
+            {
+                "args": [
+                    {"ST1": [5.0, 4.9, 5.0]},
+                    {"ST1": 5.0},
+                ],
+                "check": lambda r: isinstance(r, dict) and r.get("ST1") == 2,
+            },
+        ]),
+    },
+    # --- task_sb_002: Economics HP Filter Correlation (Medium) --- exec verifier
+    {
+        "id": "task_sb_002",
+        "difficulty": "medium",
+        "source": "skillsbench",
+        "description": (
+            "Write a Python function called `hp_filter_correlation` that takes two arguments: "
+            "`series_a` (list of floats) and `series_b` (list of floats) representing two "
+            "economic time series. The function should: 1) Take the natural log of each "
+            "series, 2) Apply the Hodrick-Prescott filter with lambda=100 to extract "
+            "cyclical components, 3) Compute and return the Pearson correlation coefficient "
+            "between the two cyclical components as a float rounded to 5 decimal places. "
+            "You may use numpy and scipy (statsmodels.api.tsa.filters.hpfilter is available)."
+        ),
+        "relevant_skills": ["skill_sb_004"],
+        "distractor_skills": ["skill_sb_005", "skill_sb_006"],
+        "verifier": _exec_verifier("hp_filter_correlation", [
+            {
+                "args": [_SB_HP_SERIES_A, _SB_HP_SERIES_B],
+                "check": lambda r: (
+                    isinstance(r, (int, float))
+                    and abs(float(r) - _SB_HP_EXPECTED_CORR) < 0.01
+                ),
+            },
+        ]),
+    },
+    # --- task_sb_003: Dialogue Parser (Medium) --- exec verifier
+    {
+        "id": "task_sb_003",
+        "difficulty": "medium",
+        "source": "skillsbench",
+        "description": (
+            "Write a Python function called `parse_dialogue` that takes a dialogue script "
+            "string and returns a dict with 'nodes' (list of dicts with 'id', 'text', "
+            "'speaker', 'type') and 'edges' (list of dicts with 'from', 'to', 'text'). "
+            "Parse this format:\n\n"
+            "```\n"
+            "[SceneName]\n"
+            "Speaker: Dialogue text. -> NextScene\n"
+            "\n"
+            "[ChoiceScene]\n"
+            "1. Choice text -> TargetScene\n"
+            "2. Another choice -> OtherTarget\n"
+            "```\n\n"
+            "Lines with `[Name]` define scene nodes (type='line' if has speaker dialogue, "
+            "type='choice' if has numbered options). Arrow `->` defines edges. For line "
+            "nodes, text is the dialogue text and speaker is the speaker name. For choice "
+            "nodes, text and speaker are empty strings. Edge text is the choice text for "
+            "choices or empty string for line transitions."
+        ),
+        "relevant_skills": ["skill_sb_007"],
+        "distractor_skills": ["skill_sb_008", "skill_sb_009"],
+        "verifier": _exec_verifier("parse_dialogue", [
+            {
+                "args": [_SB_DIALOGUE_TEST_SCRIPT],
+                "check": lambda r: (
+                    isinstance(r, dict)
+                    and "nodes" in r and "edges" in r
+                    and isinstance(r["nodes"], list) and isinstance(r["edges"], list)
+                    # Must have 5 nodes: GateScene, NameChoice, KnightPath, TravelerPath, End
+                    and len(r["nodes"]) == 5
+                    # Check specific nodes exist with correct data
+                    and any(
+                        n.get("id") == "GateScene"
+                        and n.get("speaker") == "Guard"
+                        and "Halt" in n.get("text", "")
+                        and n.get("type") == "line"
+                        for n in r["nodes"]
+                    )
+                    and any(
+                        n.get("id") == "NameChoice"
+                        and n.get("type") == "choice"
+                        for n in r["nodes"]
+                    )
+                    and any(
+                        n.get("id") == "End"
+                        for n in r["nodes"]
+                    )
+                    # Must have 5 edges
+                    and len(r["edges"]) == 5
+                    # Check specific edges
+                    and any(
+                        e.get("from") == "GateScene" and e.get("to") == "NameChoice"
+                        for e in r["edges"]
+                    )
+                    and any(
+                        e.get("from") == "NameChoice" and e.get("to") == "KnightPath"
+                        for e in r["edges"]
+                    )
+                    and any(
+                        e.get("from") == "NameChoice" and e.get("to") == "TravelerPath"
+                        for e in r["edges"]
+                    )
+                    and any(
+                        e.get("from") == "KnightPath" and e.get("to") == "End"
+                        for e in r["edges"]
+                    )
+                    and any(
+                        e.get("from") == "TravelerPath" and e.get("to") == "End"
+                        for e in r["edges"]
+                    )
+                ),
+            },
+        ]),
+    },
+])

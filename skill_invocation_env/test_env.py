@@ -453,6 +453,127 @@ def parse_novabin_record(data: bytes, offset: int) -> tuple:
     print("[PASS] test_verifier_task008_record_parser")
 
 
+# ---------------------------------------------------------------------------
+# SkillsBench-adapted task tests
+# ---------------------------------------------------------------------------
+
+def test_sb_001_flood_detection_correct():
+    """Verify task_sb_001 flood detection passes with correct implementation."""
+    task = next(t for t in TASK_BANK if t["id"] == "task_sb_001")
+    correct_code = '''
+def detect_flood_days(daily_max_levels, flood_thresholds):
+    result = {}
+    for station_id, levels in daily_max_levels.items():
+        if station_id not in flood_thresholds:
+            continue
+        threshold = flood_thresholds[station_id]
+        flood_days = sum(1 for level in levels if level >= threshold)
+        if flood_days > 0:
+            result[station_id] = flood_days
+    return result
+'''
+    assert task["verifier"](correct_code), "Correct flood detection should pass"
+
+    garbage = "detect_flood_days daily_max_levels flood_thresholds threshold"
+    assert not task["verifier"](garbage), "Keywords should fail"
+
+    print("[PASS] test_sb_001_flood_detection_correct")
+
+
+def test_sb_002_hp_filter_correct():
+    """Verify task_sb_002 HP filter correlation passes with correct implementation."""
+    try:
+        import numpy  # noqa: F401
+        from statsmodels.tsa.filters.hp_filter import hpfilter  # noqa: F401
+    except ImportError:
+        print("[SKIP] test_sb_002_hp_filter_correct - scipy/statsmodels not installed")
+        return
+
+    task = next(t for t in TASK_BANK if t["id"] == "task_sb_002")
+    correct_code = '''
+import numpy as np
+from statsmodels.tsa.filters.hp_filter import hpfilter
+
+def hp_filter_correlation(series_a, series_b):
+    log_a = np.log(series_a)
+    log_b = np.log(series_b)
+    cycle_a, _ = hpfilter(log_a, lamb=100)
+    cycle_b, _ = hpfilter(log_b, lamb=100)
+    corr = np.corrcoef(cycle_a, cycle_b)[0, 1]
+    return round(float(corr), 5)
+'''
+    assert task["verifier"](correct_code), "Correct HP filter implementation should pass"
+
+    garbage = "hp_filter_correlation numpy hpfilter corrcoef lamb=100"
+    assert not task["verifier"](garbage), "Keywords should fail"
+
+    print("[PASS] test_sb_002_hp_filter_correct")
+
+
+def test_sb_003_dialogue_parser_correct():
+    """Verify task_sb_003 dialogue parser passes with correct implementation."""
+    task = next(t for t in TASK_BANK if t["id"] == "task_sb_003")
+    # Use a separate file-like approach to avoid backslash escaping issues
+    correct_code = (
+        'import re\n'
+        '\n'
+        'def parse_dialogue(script):\n'
+        '    nodes = []\n'
+        '    edges = []\n'
+        '    lines = script.strip().split("\\n")\n'
+        '    current_node_id = None\n'
+        '    current_lines = []\n'
+        '    def flush_node():\n'
+        '        nonlocal current_node_id, current_lines\n'
+        '        if current_node_id is None:\n'
+        '            return\n'
+        '        content_lines = [l.strip() for l in current_lines if l.strip()]\n'
+        '        is_choice = any(re.match(r"^\\d+\\.", l) for l in content_lines)\n'
+        '        if is_choice:\n'
+        '            nodes.append({"id": current_node_id, "text": "", "speaker": "", "type": "choice"})\n'
+        '            for l in content_lines:\n'
+        '                m = re.match(r"^(\\d+\\.\\s*.+?)\\s*->\\s*(\\w+)$", l)\n'
+        '                if m:\n'
+        '                    edges.append({"from": current_node_id, "to": m.group(2), "text": m.group(1).strip()})\n'
+        '        else:\n'
+        '            speaker = ""\n'
+        '            text = ""\n'
+        '            target = None\n'
+        '            for l in content_lines:\n'
+        '                m = re.match(r"^(\\w[\\w\\s]*):\\s*(.+?)\\s*->\\s*(\\w+)$", l)\n'
+        '                if m:\n'
+        '                    speaker = m.group(1)\n'
+        '                    text = m.group(2).strip()\n'
+        '                    target = m.group(3)\n'
+        '                else:\n'
+        '                    m2 = re.match(r"^(\\w[\\w\\s]*):\\s*(.+)$", l)\n'
+        '                    if m2:\n'
+        '                        speaker = m2.group(1)\n'
+        '                        text = m2.group(2).strip()\n'
+        '            nodes.append({"id": current_node_id, "text": text, "speaker": speaker, "type": "line"})\n'
+        '            if target:\n'
+        '                edges.append({"from": current_node_id, "to": target, "text": ""})\n'
+        '        current_node_id = None\n'
+        '        current_lines = []\n'
+        '    for line in lines:\n'
+        '        m = re.match(r"^\\[(\\w+)\\]$", line.strip())\n'
+        '        if m:\n'
+        '            flush_node()\n'
+        '            current_node_id = m.group(1)\n'
+        '            current_lines = []\n'
+        '        else:\n'
+        '            current_lines.append(line)\n'
+        '    flush_node()\n'
+        '    return {"nodes": nodes, "edges": edges}\n'
+    )
+    assert task["verifier"](correct_code), "Correct dialogue parser should pass"
+
+    garbage = "parse_dialogue nodes edges from to text speaker type"
+    assert not task["verifier"](garbage), "Keywords should fail"
+
+    print("[PASS] test_sb_003_dialogue_parser_correct")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("Skill Invocation Environment - Local Tests")
@@ -479,6 +600,10 @@ if __name__ == "__main__":
         test_verifier_task003_structural,
         test_verifier_task004_yaml_structure,
         test_verifier_task008_record_parser,
+        # SkillsBench-adapted task tests
+        test_sb_001_flood_detection_correct,
+        test_sb_002_hp_filter_correct,
+        test_sb_003_dialogue_parser_correct,
     ]
 
     passed = 0
