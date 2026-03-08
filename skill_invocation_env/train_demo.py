@@ -187,21 +187,12 @@ def rollout_once(
         if turn == 0:
             # First turn: store the full prompt
             prompt_ids.extend(new_prompt_ids)
-            prev_total_len = len(new_prompt_ids)
-        else:
-            # Later turns: only append the delta (new env feedback tokens
-            # beyond what we've already tracked). These get zeroed-out
-            # logprobs since they're env-generated, not model-generated.
-            delta_ids = new_prompt_ids[prev_total_len:]
-            completion_ids.extend(delta_ids)
-            logprobs.extend([0.0] * len(delta_ids))
 
-        # Append the model's generation tokens (these get real logprobs)
+        # Only track model-generated tokens (with real logprobs).
+        # Skip env feedback tokens — interleaving them with logprob=0.0
+        # breaks GRPO's importance sampling ratio computation.
         completion_ids.extend(rollout_outputs["completion_ids"])
         logprobs.extend(rollout_outputs["logprobs"])
-
-        # Update running total: everything up to and including this turn's completion
-        prev_total_len = len(new_prompt_ids) + len(rollout_outputs["completion_ids"])
 
         completion_text = rollout_outputs.get("text") or tokenizer.decode(
             rollout_outputs["completion_ids"], skip_special_tokens=True,
