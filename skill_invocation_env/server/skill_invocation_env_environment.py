@@ -11,7 +11,7 @@ Reward has two distinct cost signals:
     but turned out to be irrelevant, even if unloaded before submission (-0.05 per
     skill). This captures cumulative token waste across the episode.
 
-Actions: list, load, unload, submit (plus "invoke" as backward-compat alias for load).
+Actions: load, unload, submit (plus "invoke" as backward-compat alias for load).
 """
 
 import random
@@ -35,7 +35,7 @@ class SkillInvocationEnvironment(Environment):
 
     Episodes:
     1. reset() samples a task, assembles skill catalog (relevant + distractors)
-    2. Agent can list, load, and unload skills (within context budget)
+    2. Agent can load and unload skills (within context budget)
     3. Agent submits a solution
     4. Reward = correctness + precision + recall - bloat - token_waste
     """
@@ -128,7 +128,7 @@ class SkillInvocationEnvironment(Environment):
         timeout_s: Optional[float] = None,
         **kwargs,
     ) -> SkillInvocationObservation:
-        """Process a list, load, unload, or submit action."""
+        """Process a load, unload, or submit action."""
         self._state.step_count += 1
 
         if self._state.done:

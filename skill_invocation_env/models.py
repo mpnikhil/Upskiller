@@ -27,7 +27,7 @@ class SkillDescription(Action):
 
 
 class SkillInvocationAction(Action):
-    """Agent's action — list, load, unload, or submit."""
+    """Agent's action — load, unload, or submit."""
 
     action_type: str = Field(
         ...,
