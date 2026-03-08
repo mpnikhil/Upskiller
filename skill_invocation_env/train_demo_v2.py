@@ -211,6 +211,7 @@ if __name__ == "__main__":
         num_generations=NUM_GENERATIONS,
         max_completion_length=MAX_COMPLETION_LENGTH,
         per_device_train_batch_size=1,
+        generation_batch_size=16,
         gradient_accumulation_steps=2,
         learning_rate=5e-6,
         max_tool_calling_iterations=8,
