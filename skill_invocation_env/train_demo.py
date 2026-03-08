@@ -42,7 +42,9 @@ WORKFLOW:
 4. Submit your answer using the ACTUAL code/syntax/config from the loaded skills, adapted to the task requirements
 
 CRITICAL: Your submitted answer must contain the actual code, configuration, or implementation — NOT a description of what it should do. \
-Copy and adapt the patterns from loaded skills directly."""
+Copy and adapt the patterns from loaded skills directly.
+
+IMPORTANT: You can only submit ONCE. After submitting, the episode ends. Do not attempt to submit again."""
 
 
 def format_observation(obs) -> str:
