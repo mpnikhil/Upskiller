@@ -30,7 +30,7 @@ HF_TOKEN = os.getenv("HF_TOKEN")
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", "./outputs/qwen-skill-env-v2")
 HUB_REPO = os.getenv("HUB_REPO", "mpnikhil/Qwen2.5-3B-Skill-Invocation")
 NUM_EPISODES = int(os.getenv("NUM_EPISODES", "32"))
-NUM_GENERATIONS = int(os.getenv("NUM_GENERATIONS", "16"))
+NUM_GENERATIONS = int(os.getenv("NUM_GENERATIONS", "8"))
 MAX_COMPLETION_LENGTH = int(os.getenv("MAX_COMPLETION_LENGTH", "4096"))
 
 SYSTEM_PROMPT = """\
@@ -213,10 +213,10 @@ if __name__ == "__main__":
         num_generations=NUM_GENERATIONS,
         max_completion_length=MAX_COMPLETION_LENGTH,
         per_device_train_batch_size=1,
-        generation_batch_size=16,
+        generation_batch_size=8,
         gradient_accumulation_steps=2,
         learning_rate=1e-6,
-        max_tool_calling_iterations=8,
+        max_tool_calling_iterations=5,
         logging_steps=1,
         save_steps=50,
         report_to="wandb",
