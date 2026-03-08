@@ -13,6 +13,7 @@ import hashlib
 import re
 import os
 
+import wandb
 from datasets import Dataset
 from trl import GRPOConfig, GRPOTrainer
 from trl.experimental.openenv import generate_rollout_completions
