@@ -10,17 +10,17 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends git && \
     rm -rf /var/lib/apt/lists/*
 
-# Python training deps
+# Python training deps — pin vLLM to 0.14.1 (max supported by TRL)
 RUN pip install --no-cache-dir \
-    trl>=0.18.0 \
-    peft>=0.15.0 \
-    transformers>=4.50.0 \
-    datasets>=3.0.0 \
-    accelerate>=1.4.0 \
-    vllm>=0.8.0 \
-    openenv-core[core]>=0.2.1 \
-    pydantic>=2.0 \
-    wandb
+    "vllm==0.14.1" \
+    "trl[vllm]>=0.18.0" \
+    "peft>=0.15.0" \
+    "transformers>=4.50.0" \
+    "datasets>=3.0.0" \
+    "accelerate>=1.4.0" \
+    "openenv-core[core]>=0.2.1" \
+    "pydantic>=2.0" \
+    "wandb"
 
 # Copy project code
 COPY skill_invocation_env/ /app/skill_invocation_env/
@@ -30,7 +30,7 @@ ENV PYTHONPATH="/app:$PYTHONPATH"
 ENV PYTHONUNBUFFERED=1
 
 # Default env vars (override via Northflank environment variables)
-ENV MODEL_ID="Qwen/Qwen3-8B-Instruct"
+ENV MODEL_ID="Qwen/Qwen2.5-7B-Instruct"
 ENV ENV_URL="https://mpnikhil-skill-invocation-env.hf.space"
 ENV OUTPUT_DIR="/app/outputs"
 ENV NUM_EPISODES="128"

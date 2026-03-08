@@ -23,11 +23,11 @@ from skill_invocation_env.client import SkillInvocationEnv
 from skill_invocation_env.models import SkillInvocationAction
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-MODEL_ID = os.getenv("MODEL_ID", "Qwen/Qwen3-8B-Instruct")
+MODEL_ID = os.getenv("MODEL_ID", "Qwen/Qwen2.5-7B-Instruct")
 ENV_URL = os.getenv("ENV_URL", "https://mpnikhil-skill-invocation-env.hf.space")
 HF_TOKEN = os.getenv("HF_TOKEN")
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", "./outputs/qwen-skill-env")
-HUB_REPO = os.getenv("HUB_REPO", "mpnikhil/Qwen3-8B-Skill-Invocation")
+HUB_REPO = os.getenv("HUB_REPO", "mpnikhil/Qwen2.5-7B-Skill-Invocation")
 NUM_EPISODES = int(os.getenv("NUM_EPISODES", "128"))
 # Default 8 turns gives headroom to explore: load-inspect-unload-reload cycles
 # beyond the minimum path of num_relevant_skills + 1 (submit) turns.
@@ -286,6 +286,20 @@ def rollout_func(prompts: list[str], trainer: GRPOTrainer) -> dict[str, list]:
     if rewards_received == 0 and len(prompts) > 0:
         print("  [WARNING] All rewards are 0.0 — check env connectivity!")
 
+    # Log rollout stats to wandb
+    if wandb.run is not None:
+        avg_reward = sum(all_rewards) / len(all_rewards) if all_rewards else 0.0
+        positive = sum(1 for r in all_rewards if r > 0)
+        negative = sum(1 for r in all_rewards if r < 0)
+        wandb.log({
+            "rollout/avg_reward": avg_reward,
+            "rollout/max_reward": max(all_rewards) if all_rewards else 0.0,
+            "rollout/min_reward": min(all_rewards) if all_rewards else 0.0,
+            "rollout/positive_pct": positive / len(all_rewards) * 100 if all_rewards else 0.0,
+            "rollout/negative_pct": negative / len(all_rewards) * 100 if all_rewards else 0.0,
+            "rollout/num_episodes": len(all_rewards),
+        })
+
     return {
         "prompt_ids": all_prompt_ids,
         "completion_ids": all_completion_ids,
@@ -324,6 +338,21 @@ if __name__ == "__main__":
     print(f"Environment: {ENV_URL}")
     print(f"Episodes: {NUM_EPISODES}, Generations per episode: {NUM_GENERATIONS}")
 
+    wandb.init(
+        project="skill-invocation-env",
+        name=f"grpo-{MODEL_ID.split('/')[-1]}-ep{NUM_EPISODES}",
+        config={
+            "model_id": MODEL_ID,
+            "env_url": ENV_URL,
+            "num_episodes": NUM_EPISODES,
+            "num_generations": NUM_GENERATIONS,
+            "max_completion_length": MAX_COMPLETION_LENGTH,
+            "max_turns": MAX_TURNS,
+            "learning_rate": 1e-6,
+            "lora_r": 16,
+        },
+    )
+
     # Each unique prompt = one GRPO group = one task (via seed).
     # GRPO will expand each prompt to num_generations rollouts internally.
     # All rollouts for the same seed face the same task → valid advantage computation.
@@ -344,6 +373,7 @@ if __name__ == "__main__":
         logging_steps=1,
         save_steps=50,
         loss_type="grpo",
+        report_to="wandb",
     )
 
     peft_config = LoraConfig(
