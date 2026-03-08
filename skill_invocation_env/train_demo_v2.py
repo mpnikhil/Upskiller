@@ -237,20 +237,27 @@ if __name__ == "__main__":
         lora_dropout=0.0,
     )
 
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.float16,
+    from transformers import AutoModelForCausalLM
+
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL_ID,
+        device_map="auto",
+        dtype="float32",
+        quantization_config=BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True,
+        ),
     )
 
     trainer = GRPOTrainer(
-        model=MODEL_ID,
+        model=model,
         reward_funcs=reward_func,
         train_dataset=dataset,
         args=training_args,
         peft_config=peft_config,
         environment_factory=SkillEnv,
-        model_init_kwargs={"quantization_config": bnb_config},
     )
 
     trainer.train()
