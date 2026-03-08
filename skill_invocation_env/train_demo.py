@@ -33,15 +33,13 @@ NUM_GENERATIONS = int(os.getenv("NUM_GENERATIONS", "4"))
 MAX_COMPLETION_LENGTH = int(os.getenv("MAX_COMPLETION_LENGTH", "4096"))
 
 SYSTEM_PROMPT = """\
-You are an expert AI software engineer. You will be given a task and a catalog of available skills.
-You must decide which skills to load to help you solve the task, and then submit your final answer.
+You are given a task and a catalog of skills (procedural knowledge). \
+Each skill has an ID, name, and description. You can load skills to read their full contents, \
+which will help you solve the task correctly. Loading a skill costs context budget, so only load what you need. \
+When ready, submit your solution.
 
-Use the available tools to interact with the environment:
-- load_skill(skill_id): Load a skill to read its contents
-- unload_skill(skill_id): Unload a skill to free context budget
-- submit(answer): Submit your final solution
-
-Always think step-by-step before calling a tool."""
+Think step-by-step: identify which skills are relevant from their descriptions, load them, \
+read the contents carefully, then submit an answer that uses the specific details from the loaded skills."""
 
 
 def format_observation(obs) -> str:
