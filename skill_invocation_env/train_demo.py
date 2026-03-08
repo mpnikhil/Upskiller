@@ -1,123 +1,316 @@
-#!/usr/bin/env python3
 """
-Minimal TRL + OpenEnv integration demo for the Skill Invocation Environment.
+GRPO Training for Skill Invocation Environment.
 
-This script demonstrates how to connect to the environment and run episodes.
-It can be run in Google Colab with Unsloth for actual RL training.
+Trains a model to decide which skills to load/unload before submitting a solution.
+Uses TRL's GRPOTrainer with a custom multi-turn rollout that interacts with the
+Skill Invocation Environment hosted on HF Spaces.
 
-Setup (Colab):
-    !pip install unsloth openenv-core trl
-    !pip install skill_invocation_env  # or install from local
-
-Usage:
-    # Against a local server:
-    python train_demo.py --base-url http://localhost:8000
-
-    # Against a HuggingFace Space:
-    python train_demo.py --base-url https://YOUR-SPACE.hf.space
+Run on Northflank with an A100/H100 GPU:
+    python train_demo.py
 """
 
-import sys
+import re
 import os
 
-# For local testing without server, use direct environment
-sys.path.insert(0, os.path.dirname(__file__))
+from datasets import Dataset
+from trl import GRPOConfig, GRPOTrainer
+from trl.experimental.openenv import generate_rollout_completions
+from transformers import AutoTokenizer
+
+from skill_invocation_env.client import SkillInvocationEnv
+from skill_invocation_env.models import SkillInvocationAction
+
+# ── Configuration ──────────────────────────────────────────────────────────────
+MODEL_ID = os.getenv("MODEL_ID", "Qwen/Qwen2.5-Coder-3B-Instruct")
+ENV_URL = os.getenv("ENV_URL", "https://mpnikhil-skill-invocation-env.hf.space")
+HF_TOKEN = os.getenv("HF_TOKEN")
+OUTPUT_DIR = os.getenv("OUTPUT_DIR", "./outputs/qwen-skill-env")
+HUB_REPO = os.getenv("HUB_REPO", "mpnikhil/Qwen2.5-3B-Skill-Invocation")
+NUM_EPISODES = int(os.getenv("NUM_EPISODES", "128"))
+MAX_TURNS = int(os.getenv("MAX_TURNS", "4"))
+NUM_GENERATIONS = int(os.getenv("NUM_GENERATIONS", "8"))
+MAX_COMPLETION_LENGTH = int(os.getenv("MAX_COMPLETION_LENGTH", "1024"))
+
+SYSTEM_PROMPT = """\
+You are an expert AI software engineer. You will be given a task and a catalog of available skills (procedural knowledge).
+You must decide which skills to load to help you solve the task, and then submit your final answer.
+
+You must interact by outputting EXACTLY ONE of the following XML actions per turn:
+
+1. To load a skill to read its contents (costs context budget):
+<action type="load" skill_id="skill_01"/>
+
+2. To unload a skill if it is not useful (frees context budget):
+<action type="unload" skill_id="skill_01"/>
+
+3. To submit your final solution:
+<action type="submit">
+your solution here
+</action>
+
+Always think step-by-step before outputting an action."""
 
 
-def demo_direct():
-    """Demo using the environment directly (no server needed)."""
-    from models import SkillInvocationAction
-    from server.skill_invocation_env_environment import SkillInvocationEnvironment
+def parse_action(text: str) -> SkillInvocationAction:
+    """Parses the LLM's text output into a SkillInvocationAction."""
+    load_match = re.search(r'<action\s+type="load"\s+skill_id="([^"]+)"\s*/>', text)
+    if load_match:
+        return SkillInvocationAction(action_type="load", skill_id=load_match.group(1))
 
-    print("=== Direct Environment Demo ===\n")
+    unload_match = re.search(r'<action\s+type="unload"\s+skill_id="([^"]+)"\s*/>', text)
+    if unload_match:
+        return SkillInvocationAction(action_type="unload", skill_id=unload_match.group(1))
 
-    env = SkillInvocationEnvironment()
+    submit_match = re.search(r'<action\s+type="submit">(.*?)</action>', text, re.DOTALL)
+    if submit_match:
+        return SkillInvocationAction(action_type="submit", answer=submit_match.group(1).strip())
 
-    # Run 3 episodes
-    for episode in range(3):
-        obs = env.reset(seed=episode)
-        print(f"--- Episode {episode + 1} ---")
-        print(f"Task: {obs.task_description[:100]}...")
-        print(f"Difficulty: {obs.difficulty}")
-        print(f"Skills available: {[s['name'] for s in obs.skill_catalog]}")
-        print(f"Context budget: {obs.context_budget_used}/{obs.context_budget_total}")
-
-        # Strategy: load the first skill in catalog
-        if obs.skill_catalog:
-            skill = obs.skill_catalog[0]
-            print(f"\nLoading skill: {skill['name']} ({skill['id']})")
-            obs = env.step(SkillInvocationAction(
-                action_type="load",
-                skill_id=skill["id"],
-            ))
-            if obs.skill_content:
-                print(f"Got skill content ({len(obs.skill_content)} chars)")
-                print(f"Preview: {obs.skill_content[:150]}...")
-                print(f"Context: {obs.context_budget_used}/{obs.context_budget_total}")
-
-        # Submit a dummy answer
-        print("\nSubmitting answer...")
-        obs = env.step(SkillInvocationAction(
-            action_type="submit",
-            answer="This is a placeholder answer for demonstration.",
-        ))
-        print(f"Done: {obs.done}")
-        print(f"Reward: {obs.reward}")
-        print(f"Verification: {obs.verification_result}")
-        print()
-
-    print("Demo complete!")
+    # Fallback: treat entire output as submission
+    return SkillInvocationAction(action_type="submit", answer=text)
 
 
-def demo_client(base_url: str):
-    """Demo using the WebSocket client against a running server."""
-    from client import SkillInvocationEnv
-    from models import SkillInvocationAction
+def format_observation(obs) -> str:
+    """Formats the observation into a user prompt string for the LLM."""
+    parts = [f"TASK: {obs.task_description}\n\nSKILL CATALOG:"]
+    for s in obs.skill_catalog:
+        parts.append(f"- [{s['id']}] {s['name']}: {s['description']}")
 
-    print(f"=== Client Demo (connecting to {base_url}) ===\n")
+    if obs.loaded_skills:
+        parts.append(f"\nCURRENTLY LOADED SKILLS: {', '.join(obs.loaded_skills)}")
 
-    with SkillInvocationEnv(base_url=base_url) as client:
-        # Reset
-        result = client.reset()
-        obs = result.observation
-        print(f"Task: {obs.task_description[:100]}...")
-        print(f"Skills available: {[s['name'] for s in obs.skill_catalog]}")
+    if obs.skill_content:
+        parts.append(f"\nJUST LOADED SKILL CONTENT:\n{obs.skill_content}")
 
-        # Load first skill
-        if obs.skill_catalog:
-            skill = obs.skill_catalog[0]
-            result = client.step(SkillInvocationAction(
-                action_type="load",
-                skill_id=skill["id"],
-            ))
-            print(f"\nLoaded '{skill['name']}'")
-            if result.observation.skill_content:
-                print(f"Content preview: {result.observation.skill_content[:200]}...")
+    if obs.verification_result:
+        parts.append(f"\nVERIFICATION: {obs.verification_result}")
 
-        # Submit
-        result = client.step(SkillInvocationAction(
-            action_type="submit",
-            answer="test answer",
-        ))
-        print(f"\nReward: {result.reward}")
-        print(f"Done: {result.done}")
-        print(f"Verification: {result.observation.verification_result}")
+    if obs.messages:
+        parts.append(f"\nSTATUS: {obs.messages[-1]}")
 
-    print("\nClient demo complete!")
+    parts.append(f"\nBUDGET USED: {obs.context_budget_used} / {obs.context_budget_total}")
+    return "\n".join(parts)
 
+
+# ── Multi-turn rollout ─────────────────────────────────────────────────────────
+
+def rollout_once(
+    trainer: GRPOTrainer,
+    env: SkillInvocationEnv,
+    tokenizer: AutoTokenizer,
+    env_seed: int,
+) -> dict:
+    """
+    Run one multi-turn episode against the Skill Invocation Environment.
+
+    Args:
+        env_seed: Deterministic seed passed to env.reset() so all generations
+                  within a GRPO group face the identical task.
+
+    Returns dict with prompt_ids, completion_ids, logprobs, and env_reward.
+    Accumulates tokens across ALL turns so GRPO can assign credit to every
+    decision (load, unload, submit).
+    """
+    result = env.reset(seed=env_seed)
+    obs = result.observation
+
+    # Token accumulation across turns:
+    # - prompt_ids: first turn's full prompt (system + initial observation)
+    # - completion_ids: all model generations + env feedback tokens interleaved
+    # - logprobs: real logprobs for model tokens, 0.0 for env feedback tokens
+    prompt_ids: list[int] = []
+    completion_ids: list[int] = []
+    logprobs: list[float] = []
+    env_reward = 0.0
+    generated_any = False
+
+    # Conversation history — the model sees its full interaction so far,
+    # so it can recall what it read in a loaded skill and decide to unload.
+    conversation = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    for turn in range(MAX_TURNS):
+        if result.done:
+            break
+
+        # Append new observation to conversation history
+        user_content = format_observation(obs)
+        conversation.append({"role": "user", "content": user_content})
+
+        prompt_text = tokenizer.apply_chat_template(
+            conversation, add_generation_prompt=True, tokenize=False,
+        )
+
+        # Generate using TRL's vLLM helper
+        rollout_outputs = generate_rollout_completions(trainer, [prompt_text])[0]
+        generated_any = True
+
+        if turn == 0:
+            # First turn: store the prompt, start accumulating completions
+            prompt_ids.extend(rollout_outputs["prompt_ids"])
+        else:
+            # Later turns: the new prompt tokens (env feedback + conversation
+            # context) become part of the completion sequence with zeroed-out
+            # logprobs — env tokens aren't model-generated.
+            env_feedback_ids = rollout_outputs["prompt_ids"]
+            completion_ids.extend(env_feedback_ids)
+            logprobs.extend([0.0] * len(env_feedback_ids))
+
+        # Append the model's generation tokens (these get real logprobs)
+        completion_ids.extend(rollout_outputs["completion_ids"])
+        logprobs.extend(rollout_outputs["logprobs"])
+
+        completion_text = rollout_outputs.get("text") or tokenizer.decode(
+            rollout_outputs["completion_ids"], skip_special_tokens=True,
+        )
+
+        # Add the model's response to conversation history
+        conversation.append({"role": "assistant", "content": completion_text})
+
+        # Parse action and step the environment
+        action = parse_action(completion_text)
+
+        try:
+            result = env.step(action)
+            obs = result.observation
+            if result.done:
+                env_reward = float(result.reward or 0.0)
+        except Exception as e:
+            print(f"    [rollout] env.step error: {e}")
+            env_reward = -1.0
+            break
+
+    # If we ran out of turns without submitting, penalize
+    if not result.done:
+        env_reward = -0.5
+
+    # Fallback if no generation happened (e.g. env.reset() returned done=True)
+    if not generated_any:
+        dummy_ids = tokenizer.encode("error", add_special_tokens=False)
+        prompt_ids = dummy_ids
+        completion_ids = list(dummy_ids)
+        logprobs = [0.0] * len(dummy_ids)
+
+    return {
+        "prompt_ids": prompt_ids,
+        "completion_ids": completion_ids,
+        "logprobs": logprobs,
+        "env_reward": env_reward,
+    }
+
+
+def rollout_func(prompts: list[str], trainer: GRPOTrainer) -> dict[str, list]:
+    """
+    Custom rollout function for GRPOTrainer.
+
+    GRPO groups: prompts arrive as [p0, p0, p0, ..., p1, p1, p1, ...] where
+    each prompt is repeated num_generations times. All rollouts for the same
+    prompt must face the same task, so we extract the seed from the prompt text
+    and pass it to env.reset(seed=...).
+    """
+    tokenizer = trainer.processing_class
+
+    all_prompt_ids = []
+    all_completion_ids = []
+    all_logprobs = []
+    all_rewards = []
+    rewards_received = 0
+
+    for i, prompt_text in enumerate(prompts):
+        # Extract seed from the prompt — format is "seed:<N> ..."
+        # This ensures all K generations for the same prompt get the same task.
+        seed = _extract_seed(prompt_text)
+
+        env = SkillInvocationEnv(base_url=ENV_URL)
+        episode = rollout_once(
+            trainer=trainer,
+            env=env,
+            tokenizer=tokenizer,
+            env_seed=seed,
+        )
+        all_prompt_ids.append(episode["prompt_ids"])
+        all_completion_ids.append(episode["completion_ids"])
+        all_logprobs.append(episode["logprobs"])
+        all_rewards.append(episode["env_reward"])
+
+        if episode["env_reward"] != 0.0:
+            rewards_received += 1
+
+        if (i + 1) % 10 == 0:
+            avg_r = sum(all_rewards) / len(all_rewards)
+            print(f"  [rollout] {i+1}/{len(prompts)} episodes, avg reward: {avg_r:.3f}")
+
+    # Issue 4 guard: verify rewards actually flowed through
+    if rewards_received == 0 and len(prompts) > 0:
+        print("  [WARNING] All rewards are 0.0 — check env connectivity!")
+
+    return {
+        "prompt_ids": all_prompt_ids,
+        "completion_ids": all_completion_ids,
+        "logprobs": all_logprobs,
+        "env_reward": all_rewards,
+    }
+
+
+def _extract_seed(prompt_text: str) -> int:
+    """Extract the env seed from a prompt like 'seed:42 ...'"""
+    match = re.match(r"seed:(\d+)", prompt_text)
+    if match:
+        return int(match.group(1))
+    # Fallback: hash the prompt to get a deterministic seed
+    return hash(prompt_text) % (2**31)
+
+
+def reward_from_env(completions, **kwargs):
+    """Extract environment rewards passed via rollout_func kwargs."""
+    env_rewards = kwargs.get("env_reward", [])
+    if not env_rewards:
+        print("  [WARNING] reward_from_env received no env_reward in kwargs!")
+        return [0.0] * len(completions)
+    return [float(r) for r in env_rewards]
+
+
+# ── Main ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    import argparse
+    print(f"Starting GRPO Training with {MODEL_ID}")
+    print(f"Environment: {ENV_URL}")
+    print(f"Episodes: {NUM_EPISODES}, Generations per episode: {NUM_GENERATIONS}")
 
-    parser = argparse.ArgumentParser(description="Skill Invocation Env Demo")
-    parser.add_argument(
-        "--base-url",
-        default=None,
-        help="Server URL (if not provided, runs directly without server)",
+    # Each unique prompt = one GRPO group = one task (via seed).
+    # GRPO will expand each prompt to num_generations rollouts internally.
+    # All rollouts for the same seed face the same task → valid advantage computation.
+    prompts = [f"seed:{i} Solve the coding task by loading the right skills." for i in range(NUM_EPISODES)]
+    dataset = Dataset.from_dict({"prompt": prompts})
+
+    training_args = GRPOConfig(
+        output_dir=OUTPUT_DIR,
+        use_vllm=True,
+        vllm_mode="colocate",
+        vllm_gpu_memory_utilization=0.4,
+        num_train_epochs=1,
+        num_generations=NUM_GENERATIONS,
+        max_completion_length=MAX_COMPLETION_LENGTH,
+        per_device_train_batch_size=8,
+        gradient_accumulation_steps=4,
+        learning_rate=1e-6,
+        logging_steps=1,
+        save_steps=50,
+        loss_type="grpo",
     )
-    args = parser.parse_args()
 
-    if args.base_url:
-        demo_client(args.base_url)
+    trainer = GRPOTrainer(
+        model=MODEL_ID,
+        reward_funcs=reward_from_env,
+        train_dataset=dataset,
+        rollout_func=rollout_func,
+        args=training_args,
+    )
+
+    trainer.train()
+
+    print("Training complete! Pushing to hub...")
+    if HF_TOKEN:
+        trainer.push_to_hub(HUB_REPO, token=HF_TOKEN)
+        print(f"Model pushed to https://huggingface.co/{HUB_REPO}")
     else:
-        demo_direct()
+        print("HF_TOKEN not set, skipping push. Model saved locally.")
+        trainer.save_model(OUTPUT_DIR)

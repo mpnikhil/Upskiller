@@ -1,0 +1,40 @@
+# Training Dockerfile for GRPO on Northflank (A100/H100)
+# Builds a GPU-ready image with PyTorch, TRL, vLLM, and the skill_invocation_env client.
+
+FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel
+
+WORKDIR /app
+
+# System deps
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git curl && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install uv for fast dependency resolution
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
+    mv /root/.local/bin/uv /usr/local/bin/uv && \
+    mv /root/.local/bin/uvx /usr/local/bin/uvx
+
+# Install Python training dependencies
+RUN pip install --no-cache-dir \
+    "trl>=0.25.0" \
+    "vllm>=0.8.0" \
+    "transformers>=4.51.0" \
+    "datasets>=3.0.0" \
+    "accelerate>=1.0.0" \
+    "peft>=0.14.0" \
+    "openenv-core[core]>=0.2.1" \
+    "pydantic>=2.0" \
+    "huggingface_hub>=0.25.0"
+
+# Copy only the client code needed for training (not the server)
+COPY __init__.py /app/skill_invocation_env/__init__.py
+COPY models.py /app/skill_invocation_env/models.py
+COPY client.py /app/skill_invocation_env/client.py
+COPY train_demo.py /app/train_demo.py
+
+ENV PYTHONPATH="/app:$PYTHONPATH"
+ENV PYTHONUNBUFFERED=1
+
+# Default entrypoint — run the training script
+CMD ["python", "train_demo.py"]
