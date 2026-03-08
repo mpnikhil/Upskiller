@@ -168,9 +168,9 @@ class SkillEnv:
         self.done = result.done
         self.reward = float(result.reward or 0.0)
         obs = result.observation
-        # Return only the verification result, not the full observation.
-        # Returning the full task/catalog again makes the model think it should act again.
-        return f"SUBMITTED. {obs.verification_result or ''}"
+        # Don't include score details — the model sees "INCORRECT" and tries to retry.
+        # Keep it terminal so the model stops generating tool calls.
+        return "Answer submitted and recorded. Episode complete."
 
 
 def reward_func(environments, **kwargs) -> list[float]:
