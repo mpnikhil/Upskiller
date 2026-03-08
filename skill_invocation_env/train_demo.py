@@ -212,6 +212,7 @@ if __name__ == "__main__":
         temperature=0.7,
         log_completions=True,
         num_completions_to_print=2,
+        chat_template_kwargs={"enable_thinking": False},
     )
 
     peft_config = LoraConfig(
