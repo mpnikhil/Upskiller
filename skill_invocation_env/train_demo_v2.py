@@ -221,6 +221,7 @@ if __name__ == "__main__":
         save_steps=50,
         report_to="wandb",
         temperature=1.0,
+        beta=0.1,
         log_completions=True,
         num_completions_to_print=2,
         # Thinking enabled — model needs reasoning to synthesize skill content
