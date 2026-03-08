@@ -31,7 +31,7 @@ OUTPUT_DIR = os.getenv("OUTPUT_DIR", "./outputs/qwen-skill-env-v2")
 HUB_REPO = os.getenv("HUB_REPO", "mpnikhil/Qwen2.5-3B-Skill-Invocation")
 NUM_EPISODES = int(os.getenv("NUM_EPISODES", "32"))
 NUM_GENERATIONS = int(os.getenv("NUM_GENERATIONS", "8"))
-MAX_COMPLETION_LENGTH = int(os.getenv("MAX_COMPLETION_LENGTH", "4096"))
+MAX_COMPLETION_LENGTH = int(os.getenv("MAX_COMPLETION_LENGTH", "4608"))
 
 SYSTEM_PROMPT = """\
 You solve tasks using a catalog of skills. Each skill has an ID, name, and description.
