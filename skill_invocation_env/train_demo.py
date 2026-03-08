@@ -163,7 +163,10 @@ class SkillEnv:
         result = self.client.step(action)
         self.done = result.done
         self.reward = float(result.reward or 0.0)
-        return format_observation(result.observation)
+        obs = result.observation
+        # Return only the verification result, not the full observation.
+        # Returning the full task/catalog again makes the model think it should act again.
+        return f"SUBMITTED. {obs.verification_result or ''}"
 
 
 def reward_func(environments, **kwargs) -> list[float]:
