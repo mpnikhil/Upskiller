@@ -127,79 +127,48 @@ def rollout_once(
     """
     Run one multi-turn episode against the Skill Invocation Environment.
 
-    Args:
-        env_seed: Deterministic seed passed to env.reset() so all generations
-                  within a GRPO group face the identical task.
-
-    Returns dict with prompt_ids, completion_ids, logprobs, and env_reward.
-    Accumulates tokens across ALL turns so GRPO can assign credit to every
-    decision (load, unload, submit).
+    Follows the TRL wordle.py pattern: fresh prompt each turn with full state
+    in the observation, extend prompt_ids/completion_ids/logprobs every turn.
+    No env feedback tokens — only model-generated tokens with real logprobs.
     """
     result = env.reset(seed=env_seed)
     obs = result.observation
 
-    # Token accumulation across turns:
-    # - prompt_ids: first turn's full prompt (system + initial observation)
-    # - completion_ids: all model generations + env feedback tokens interleaved
-    # - logprobs: real logprobs for model tokens, 0.0 for env feedback tokens
     prompt_ids: list[int] = []
     completion_ids: list[int] = []
     logprobs: list[float] = []
     env_reward = 0.0
     generated_any = False
 
-    # Tracks how many tokens we've already accounted for across turns.
-    # Each turn's prompt_ids from apply_chat_template contains the FULL
-    # conversation so far (quadratic growth). We only append the delta —
-    # the new tokens since the last turn — to keep accounting linear.
-    prev_total_len = 0
-
-    # Conversation history — the model sees its full interaction so far,
-    # so it can recall what it read in a loaded skill and decide to unload.
-    conversation = [{"role": "system", "content": SYSTEM_PROMPT}]
-
     for turn in range(MAX_TURNS):
         if result.done:
             break
 
-        # Append new observation to conversation history
+        # Fresh 2-message prompt each turn (wordle.py pattern).
+        # format_observation includes full state: task, catalog, loaded skills,
+        # loaded contents, verification result, status messages.
         user_content = format_observation(obs)
-        conversation.append({"role": "user", "content": user_content})
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ]
 
         prompt_text = tokenizer.apply_chat_template(
-            conversation, add_generation_prompt=True, tokenize=False,
+            messages, add_generation_prompt=True, tokenize=False,
         )
-
-        # Safety check: prevent vLLM context length errors. Qwen3-8B has a
-        # 32,768 token context window; leave room for MAX_COMPLETION_LENGTH.
-        prompt_token_count = len(tokenizer.encode(prompt_text, add_special_tokens=False))
-        if prompt_token_count > 31_000:
-            print(f"    [rollout] prompt too long ({prompt_token_count} tokens), breaking early")
-            env_reward = -0.5
-            break
 
         # Generate using TRL's vLLM helper
         rollout_outputs = generate_rollout_completions(trainer, [prompt_text])[0]
         generated_any = True
 
-        new_prompt_ids = rollout_outputs["prompt_ids"]
-
-        if turn == 0:
-            # First turn: store the full prompt
-            prompt_ids.extend(new_prompt_ids)
-
-        # Only track model-generated tokens (with real logprobs).
-        # Skip env feedback tokens — interleaving them with logprob=0.0
-        # breaks GRPO's importance sampling ratio computation.
+        # Accumulate across turns — extend all three lists every turn
+        prompt_ids.extend(rollout_outputs["prompt_ids"])
         completion_ids.extend(rollout_outputs["completion_ids"])
         logprobs.extend(rollout_outputs["logprobs"])
 
         completion_text = rollout_outputs.get("text") or tokenizer.decode(
             rollout_outputs["completion_ids"], skip_special_tokens=True,
         )
-
-        # Add the model's response to conversation history
-        conversation.append({"role": "assistant", "content": completion_text})
 
         # Parse action and step the environment
         action = parse_action(completion_text)
