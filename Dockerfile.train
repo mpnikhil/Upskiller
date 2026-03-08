@@ -1,5 +1,5 @@
-# Training Dockerfile for Northflank CI/CD (H100)
-# Runs GRPO training against the HF Spaces-hosted environment server.
+# Training Dockerfile for GRPO on H100/A100
+# Uses environment_factory (no vLLM needed)
 
 FROM pytorch/pytorch:2.6.0-cuda12.6-cudnn9-devel
 
@@ -10,17 +10,9 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends git && \
     rm -rf /var/lib/apt/lists/*
 
-# Python training deps — pin vLLM to 0.14.1 (max supported by TRL)
-RUN pip install --no-cache-dir \
-    "vllm==0.14.1" \
-    "trl[vllm]>=0.18.0" \
-    "peft>=0.15.0" \
-    "transformers>=4.50.0" \
-    "datasets>=3.0.0" \
-    "accelerate>=1.4.0" \
-    "openenv-core[core]>=0.2.1" \
-    "pydantic>=2.0" \
-    "wandb"
+# Install training deps from pinned requirements
+COPY requirements-train.txt /app/
+RUN pip install --no-cache-dir -r requirements-train.txt
 
 # Copy project code
 COPY skill_invocation_env/ /app/skill_invocation_env/
@@ -29,12 +21,12 @@ COPY skill_invocation_env/ /app/skill_invocation_env/
 ENV PYTHONPATH="/app:$PYTHONPATH"
 ENV PYTHONUNBUFFERED=1
 
-# Default env vars (override via Northflank environment variables)
-ENV MODEL_ID="Qwen/Qwen2.5-7B-Instruct"
+# Default env vars (override via runtime environment variables)
+ENV MODEL_ID="Qwen/Qwen2.5-3B-Instruct"
 ENV ENV_URL="https://mpnikhil-skill-invocation-env.hf.space"
 ENV OUTPUT_DIR="/app/outputs"
 ENV NUM_EPISODES="128"
-ENV NUM_GENERATIONS="8"
+ENV NUM_GENERATIONS="4"
 ENV MAX_COMPLETION_LENGTH="1024"
 
 CMD ["python", "skill_invocation_env/train_demo.py"]
