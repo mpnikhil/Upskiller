@@ -19,7 +19,6 @@ from trl import GRPOConfig, GRPOTrainer
 from trl.experimental.openenv import generate_rollout_completions
 from transformers import AutoTokenizer
 from peft import LoraConfig
-from transformers import BitsAndBytesConfig
 
 from skill_invocation_env.client import SkillInvocationEnv
 from skill_invocation_env.models import SkillInvocationAction
@@ -377,7 +376,6 @@ if __name__ == "__main__":
         max_completion_length=512,
         per_device_train_batch_size=1,
         gradient_accumulation_steps=32,
-        max_prompt_length=1024,
         learning_rate=1e-6,
         logging_steps=1,
         save_steps=50,
@@ -392,15 +390,8 @@ if __name__ == "__main__":
         task_type="CAUSAL_LM",
     )
 
-    quantization_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype="float16",
-        bnb_4bit_quant_type="nf4",
-    )
-
     trainer = GRPOTrainer(
         model=MODEL_ID,
-        model_init_kwargs={"quantization_config": quantization_config},
         reward_funcs=reward_from_env,
         train_dataset=dataset,
         rollout_func=rollout_func,
