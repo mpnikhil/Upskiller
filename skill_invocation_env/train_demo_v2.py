@@ -13,10 +13,8 @@ Run on Northflank / Jupyter with GPU:
 
 import os
 
-import torch
 import wandb
 from datasets import Dataset
-from transformers import BitsAndBytesConfig
 from trl import GRPOConfig, GRPOTrainer
 from peft import LoraConfig
 
@@ -24,7 +22,7 @@ from skill_invocation_env.client import SkillInvocationEnv
 from skill_invocation_env.models import SkillInvocationAction
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-MODEL_ID = os.getenv("MODEL_ID", "Qwen/Qwen3-8B")
+MODEL_ID = os.getenv("MODEL_ID", "Qwen/Qwen3-4B")
 ENV_URL = os.getenv("ENV_URL", "https://mpnikhil-skill-invocation-env.hf.space")
 HF_TOKEN = os.getenv("HF_TOKEN")
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", "./outputs/qwen-skill-env-v2")
@@ -238,22 +236,8 @@ if __name__ == "__main__":
         lora_dropout=0.0,
     )
 
-    from transformers import AutoModelForCausalLM
-
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL_ID,
-        device_map="auto",
-        dtype="float32",
-        quantization_config=BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.float16,
-            bnb_4bit_use_double_quant=True,
-        ),
-    )
-
     trainer = GRPOTrainer(
-        model=model,
+        model=MODEL_ID,
         reward_funcs=reward_func,
         train_dataset=dataset,
         args=training_args,
