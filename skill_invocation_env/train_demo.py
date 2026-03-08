@@ -216,7 +216,7 @@ if __name__ == "__main__":
         per_device_train_batch_size=1,
         gradient_accumulation_steps=8,
         learning_rate=1e-6,
-        max_tool_calling_iterations=4,
+        max_tool_calling_iterations=8,
         logging_steps=1,
         save_steps=50,
         report_to="wandb",
