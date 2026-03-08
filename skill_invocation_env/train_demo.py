@@ -30,7 +30,7 @@ OUTPUT_DIR = os.getenv("OUTPUT_DIR", "./outputs/qwen-skill-env")
 HUB_REPO = os.getenv("HUB_REPO", "mpnikhil/Qwen2.5-3B-Skill-Invocation")
 NUM_EPISODES = int(os.getenv("NUM_EPISODES", "64"))
 NUM_GENERATIONS = int(os.getenv("NUM_GENERATIONS", "4"))
-MAX_COMPLETION_LENGTH = int(os.getenv("MAX_COMPLETION_LENGTH", "4096"))
+MAX_COMPLETION_LENGTH = int(os.getenv("MAX_COMPLETION_LENGTH", "2048"))
 
 SYSTEM_PROMPT = """\
 You are given a task and a catalog of skills (procedural knowledge). \
@@ -212,7 +212,7 @@ if __name__ == "__main__":
         temperature=0.7,
         log_completions=True,
         num_completions_to_print=2,
-        # Note: Qwen3 needs thinking mode for proper tool calling
+        chat_template_kwargs={"enable_thinking": False},
     )
 
     peft_config = LoraConfig(
