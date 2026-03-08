@@ -126,7 +126,6 @@ class SkillEnv:
             The loaded skill content.
         """
         if self.done:
-            self.reward = -1.0
             raise ValueError("Game over.")
         action = SkillInvocationAction(action_type="load", skill_id=skill_id)
         result = self.client.step(action)
@@ -147,7 +146,6 @@ class SkillEnv:
             Confirmation of unload.
         """
         if self.done:
-            self.reward = -1.0
             raise ValueError("Game over.")
         action = SkillInvocationAction(action_type="unload", skill_id=skill_id)
         result = self.client.step(action)
@@ -166,7 +164,6 @@ class SkillEnv:
             Verification result with your score.
         """
         if self.done:
-            self.reward = -1.0
             raise ValueError("Game over.")
         action = SkillInvocationAction(action_type="submit", answer=answer)
         result = self.client.step(action)
