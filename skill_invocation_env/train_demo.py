@@ -23,11 +23,11 @@ from skill_invocation_env.client import SkillInvocationEnv
 from skill_invocation_env.models import SkillInvocationAction
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-MODEL_ID = os.getenv("MODEL_ID", "Qwen/Qwen2.5-Coder-3B-Instruct")
+MODEL_ID = os.getenv("MODEL_ID", "Qwen/Qwen3-8B-Instruct")
 ENV_URL = os.getenv("ENV_URL", "https://mpnikhil-skill-invocation-env.hf.space")
 HF_TOKEN = os.getenv("HF_TOKEN")
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", "./outputs/qwen-skill-env")
-HUB_REPO = os.getenv("HUB_REPO", "mpnikhil/Qwen2.5-3B-Skill-Invocation")
+HUB_REPO = os.getenv("HUB_REPO", "mpnikhil/Qwen3-8B-Skill-Invocation")
 NUM_EPISODES = int(os.getenv("NUM_EPISODES", "128"))
 # Default 8 turns gives headroom to explore: load-inspect-unload-reload cycles
 # beyond the minimum path of num_relevant_skills + 1 (submit) turns.
@@ -168,6 +168,14 @@ def rollout_once(
         prompt_text = tokenizer.apply_chat_template(
             conversation, add_generation_prompt=True, tokenize=False,
         )
+
+        # Safety check: prevent vLLM context length errors. Qwen3-8B has a
+        # 32,768 token context window; leave room for MAX_COMPLETION_LENGTH.
+        prompt_token_count = len(tokenizer.encode(prompt_text, add_special_tokens=False))
+        if prompt_token_count > 31_000:
+            print(f"    [rollout] prompt too long ({prompt_token_count} tokens), breaking early")
+            env_reward = -0.5
+            break
 
         # Generate using TRL's vLLM helper
         rollout_outputs = generate_rollout_completions(trainer, [prompt_text])[0]
@@ -341,7 +349,7 @@ if __name__ == "__main__":
     peft_config = LoraConfig(
         r=16,
         lora_alpha=32,
-        target_modules=["q_proj", "v_proj"],
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
         task_type="CAUSAL_LM",
     )
 
