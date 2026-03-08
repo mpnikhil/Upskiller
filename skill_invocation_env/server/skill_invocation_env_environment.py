@@ -3,7 +3,13 @@ Skill Invocation Environment Implementation.
 
 Trains LLMs to decide WHEN to invoke procedural knowledge (skills) during
 task-solving. Context cost model: each loaded skill costs context budget.
-Reward penalizes bloat and rewards precision.
+
+Reward has two distinct cost signals:
+  - Context hygiene (bloat_penalty): penalizes irrelevant skills still loaded at
+    submit time (-0.15 per skill).
+  - Token efficiency (token_waste_penalty): penalizes skills that were ever loaded
+    but turned out to be irrelevant, even if unloaded before submission (-0.05 per
+    skill). This captures cumulative token waste across the episode.
 
 Actions: list, load, unload, submit (plus "invoke" as backward-compat alias for load).
 """
@@ -31,7 +37,7 @@ class SkillInvocationEnvironment(Environment):
     1. reset() samples a task, assembles skill catalog (relevant + distractors)
     2. Agent can list, load, and unload skills (within context budget)
     3. Agent submits a solution
-    4. Reward = correctness + precision - bloat
+    4. Reward = correctness + precision + recall - bloat - token_waste
     """
 
     SUPPORTS_CONCURRENT_SESSIONS: bool = True
@@ -51,6 +57,8 @@ class SkillInvocationEnvironment(Environment):
         self._task_generator = TaskGenerator(seed=procedural_seed) if use_procedural else None
         self._episode_skills: dict = {}
         self._context_budget = context_budget
+        # Per-instance RNG to avoid mutating global random state (concurrency-safe)
+        self._rng = random.Random()
 
     def reset(
         self,
@@ -59,23 +67,27 @@ class SkillInvocationEnvironment(Environment):
         **kwargs,
     ) -> SkillInvocationObservation:
         """Sample a random task and assemble the skill catalog."""
+        # Use a local RNG instance to avoid mutating global random state.
+        # This is concurrency-safe: parallel rollouts won't clobber each other's seeds.
         if seed is not None:
-            random.seed(seed)
+            self._rng = random.Random(seed)
+        else:
+            self._rng = random.Random()
 
         if self._use_procedural and self._task_generator:
-            gen_seed = seed if seed is not None else random.randint(0, 2**31)
+            gen_seed = seed if seed is not None else self._rng.randint(0, 2**31)
             result = self._task_generator.generate_with_seed(gen_seed)
             task = result["task"]
             self._episode_skills = result["skills"]
         else:
-            task = random.choice(TASK_BANK)
+            task = self._rng.choice(TASK_BANK)
             self._episode_skills = SKILL_BANK
 
         self._current_task = task
 
         # Build catalog: relevant + distractor skills, shuffled
         catalog_ids = list(task["relevant_skills"]) + list(task["distractor_skills"])
-        random.shuffle(catalog_ids)
+        self._rng.shuffle(catalog_ids)
         self._catalog_skill_ids = catalog_ids
 
         # Build catalog descriptions (short only, no full content)
@@ -227,7 +239,17 @@ class SkillInvocationEnvironment(Environment):
         return self._make_observation(skill_content=None, reward=0.0, done=False)
 
     def _handle_submit(self, action: SkillInvocationAction) -> SkillInvocationObservation:
-        """Handle a solution submission. Compute reward based on correctness + precision - bloat."""
+        """Handle a solution submission.
+
+        Reward = correctness + precision + recall - bloat - token_waste.
+
+        Two distinct cost signals:
+          - bloat_penalty (-0.15 per skill): penalizes irrelevant skills still
+            loaded at submit time (context hygiene).
+          - token_waste_penalty (-0.05 per skill): penalizes skills that were ever
+            loaded but turned out irrelevant, capturing cumulative token waste
+            across the episode (token efficiency).
+        """
         answer = action.answer or ""
         task = self._current_task
 
@@ -239,6 +261,7 @@ class SkillInvocationEnvironment(Environment):
 
         # Compute reward
         loaded = set(self._state.loaded_skills)
+        ever_loaded = set(self._state.skills_ever_loaded)
         relevant = set(task["relevant_skills"])
 
         # 1. Correctness: +0.6
@@ -262,7 +285,11 @@ class SkillInvocationEnvironment(Environment):
         unnecessary = loaded - relevant
         bloat_penalty = -0.15 * len(unnecessary)
 
-        total_reward = correctness + precision_bonus + recall_bonus + bloat_penalty
+        # 5. Token waste: penalty for skills ever loaded that were irrelevant
+        wasted = ever_loaded - relevant
+        token_waste_penalty = -0.05 * len(wasted)
+
+        total_reward = correctness + precision_bonus + recall_bonus + bloat_penalty + token_waste_penalty
         total_reward = max(total_reward, -1.0)
 
         self._state.done = True
@@ -270,7 +297,8 @@ class SkillInvocationEnvironment(Environment):
             f"{'CORRECT' if task_correct else 'INCORRECT'}. "
             f"Reward: correctness={correctness:.2f}, "
             f"precision={precision_bonus:.2f}, recall={recall_bonus:.2f}, "
-            f"bloat={bloat_penalty:.2f}, total={total_reward:.2f}"
+            f"bloat={bloat_penalty:.2f}, token_waste={token_waste_penalty:.2f}, "
+            f"total={total_reward:.2f}"
         )
         self._messages.append(f"Submitted answer. {verification_msg}")
 

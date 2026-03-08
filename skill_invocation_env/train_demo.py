@@ -17,6 +17,7 @@ from datasets import Dataset
 from trl import GRPOConfig, GRPOTrainer
 from trl.experimental.openenv import generate_rollout_completions
 from transformers import AutoTokenizer
+from peft import LoraConfig
 
 from skill_invocation_env.client import SkillInvocationEnv
 from skill_invocation_env.models import SkillInvocationAction
@@ -28,7 +29,9 @@ HF_TOKEN = os.getenv("HF_TOKEN")
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", "./outputs/qwen-skill-env")
 HUB_REPO = os.getenv("HUB_REPO", "mpnikhil/Qwen2.5-3B-Skill-Invocation")
 NUM_EPISODES = int(os.getenv("NUM_EPISODES", "128"))
-MAX_TURNS = int(os.getenv("MAX_TURNS", "4"))
+# Default 8 turns gives headroom to explore: load-inspect-unload-reload cycles
+# beyond the minimum path of num_relevant_skills + 1 (submit) turns.
+MAX_TURNS = int(os.getenv("MAX_TURNS", "8"))
 NUM_GENERATIONS = int(os.getenv("NUM_GENERATIONS", "8"))
 MAX_COMPLETION_LENGTH = int(os.getenv("MAX_COMPLETION_LENGTH", "1024"))
 
@@ -81,6 +84,26 @@ def format_observation(obs) -> str:
 
     if obs.skill_content:
         parts.append(f"\nJUST LOADED SKILL CONTENT:\n{obs.skill_content}")
+
+    # Surface all currently-loaded skill contents so the model doesn't rely
+    # solely on conversation history to recall previously-loaded skills.
+    if obs.loaded_skill_contents:
+        just_loaded_id = None
+        if obs.skill_content:
+            # Find which skill was just loaded to avoid duplicating its content
+            for sid, content in obs.loaded_skill_contents.items():
+                if content == obs.skill_content:
+                    just_loaded_id = sid
+                    break
+        other_contents = {
+            sid: content
+            for sid, content in obs.loaded_skill_contents.items()
+            if sid != just_loaded_id
+        }
+        if other_contents:
+            parts.append("\nOTHER LOADED SKILL CONTENTS:")
+            for sid, content in other_contents.items():
+                parts.append(f"\n[{sid}]:\n{content}")
 
     if obs.verification_result:
         parts.append(f"\nVERIFICATION: {obs.verification_result}")
@@ -303,7 +326,7 @@ if __name__ == "__main__":
         output_dir=OUTPUT_DIR,
         use_vllm=True,
         vllm_mode="colocate",
-        vllm_gpu_memory_utilization=0.4,
+        vllm_gpu_memory_utilization=0.6,
         num_train_epochs=1,
         num_generations=NUM_GENERATIONS,
         max_completion_length=MAX_COMPLETION_LENGTH,
@@ -315,12 +338,20 @@ if __name__ == "__main__":
         loss_type="grpo",
     )
 
+    peft_config = LoraConfig(
+        r=16,
+        lora_alpha=32,
+        target_modules=["q_proj", "v_proj"],
+        task_type="CAUSAL_LM",
+    )
+
     trainer = GRPOTrainer(
         model=MODEL_ID,
         reward_funcs=reward_from_env,
         train_dataset=dataset,
         rollout_func=rollout_func,
         args=training_args,
+        peft_config=peft_config,
     )
 
     trainer.train()
