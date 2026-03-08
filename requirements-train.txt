@@ -3,7 +3,7 @@
 # Pinned for reproducibility
 
 transformers>=5.2.0,<6
-trl>=0.26.0,<1
+trl>=0.29.0,<1
 peft>=0.15.0,<1
 datasets>=3.0.0,<4
 accelerate>=1.4.0,<2
