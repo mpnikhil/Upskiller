@@ -89,15 +89,29 @@ class SkillEnv:
     """Environment for TRL's environment_factory. Public methods become tools."""
 
     def __init__(self):
-        self.client = SkillInvocationEnv(base_url=ENV_URL, connect_timeout_s=60)
+        self.client = None
         self.reward = 0.0
         self.done = False
 
     def reset(self, **kwargs) -> str:
+        # Close previous connection if any, then open fresh one
+        if self.client is not None:
+            try:
+                self.client.close()
+            except Exception:
+                pass
+        self.client = SkillInvocationEnv(base_url=ENV_URL, connect_timeout_s=60)
         result = self.client.reset()
         self.reward = 0.0
         self.done = False
         return format_observation(result.observation)
+
+    def __del__(self):
+        if self.client is not None:
+            try:
+                self.client.close()
+            except Exception:
+                pass
 
     def load_skill(self, skill_id: str) -> str:
         """Load a skill to read its contents. Costs context budget.
