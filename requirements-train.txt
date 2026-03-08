@@ -1,0 +1,14 @@
+# Training dependencies for GRPO with environment_factory
+# No vLLM — uses HF generate() directly
+# Pinned for reproducibility
+
+transformers>=5.2.0,<6
+trl>=0.29.0,<1
+peft>=0.15.0,<1
+datasets>=3.0.0,<4
+accelerate>=1.4.0,<2
+wandb
+weave
+pydantic>=2.0,<3
+openenv-core>=0.2.1
+torch>=2.0

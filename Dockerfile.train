@@ -1,0 +1,32 @@
+# Training Dockerfile for GRPO on H100/A100
+# Uses environment_factory (no vLLM needed)
+
+FROM pytorch/pytorch:2.6.0-cuda12.6-cudnn9-devel
+
+WORKDIR /app
+
+# System deps
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install training deps from pinned requirements
+COPY requirements-train.txt /app/
+RUN pip install --no-cache-dir -r requirements-train.txt
+
+# Copy project code
+COPY skill_invocation_env/ /app/skill_invocation_env/
+
+# Make the package importable
+ENV PYTHONPATH="/app:$PYTHONPATH"
+ENV PYTHONUNBUFFERED=1
+
+# Default env vars (override via runtime environment variables)
+ENV MODEL_ID="Qwen/Qwen2.5-3B-Instruct"
+ENV ENV_URL="https://mpnikhil-skill-invocation-env.hf.space"
+ENV OUTPUT_DIR="/app/outputs"
+ENV NUM_EPISODES="128"
+ENV NUM_GENERATIONS="4"
+ENV MAX_COMPLETION_LENGTH="1024"
+
+CMD ["python", "skill_invocation_env/train_demo.py"]
