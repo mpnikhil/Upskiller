@@ -121,7 +121,7 @@ class SkillEnv:
             Updated environment state with the loaded skill content.
         """
         if self.done:
-            return "EPISODE FINISHED. No more actions allowed. Do not call any more tools."
+            return "Episode is already finished. Your answer has been submitted and scored."
         action = SkillInvocationAction(action_type="load", skill_id=skill_id)
         result = self.client.step(action)
         self.done = result.done
@@ -138,7 +138,7 @@ class SkillEnv:
             Updated environment state after unloading.
         """
         if self.done:
-            return "EPISODE FINISHED. No more actions allowed. Do not call any more tools."
+            return "Episode is already finished. Your answer has been submitted and scored."
         action = SkillInvocationAction(action_type="unload", skill_id=skill_id)
         result = self.client.step(action)
         self.done = result.done
@@ -155,7 +155,7 @@ class SkillEnv:
             Verification result with your score.
         """
         if self.done:
-            return "EPISODE FINISHED. No more actions allowed. Do not call any more tools."
+            return "Episode is already finished. Your answer has been submitted and scored."
         action = SkillInvocationAction(action_type="submit", answer=answer)
         result = self.client.step(action)
         self.done = result.done
