@@ -9,6 +9,7 @@ Run on Northflank with an A100/H100 GPU:
     python train_demo.py
 """
 
+import hashlib
 import re
 import os
 
@@ -123,6 +124,12 @@ def rollout_once(
     env_reward = 0.0
     generated_any = False
 
+    # Tracks how many tokens we've already accounted for across turns.
+    # Each turn's prompt_ids from apply_chat_template contains the FULL
+    # conversation so far (quadratic growth). We only append the delta —
+    # the new tokens since the last turn — to keep accounting linear.
+    prev_total_len = 0
+
     # Conversation history — the model sees its full interaction so far,
     # so it can recall what it read in a loaded skill and decide to unload.
     conversation = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -143,20 +150,26 @@ def rollout_once(
         rollout_outputs = generate_rollout_completions(trainer, [prompt_text])[0]
         generated_any = True
 
+        new_prompt_ids = rollout_outputs["prompt_ids"]
+
         if turn == 0:
-            # First turn: store the prompt, start accumulating completions
-            prompt_ids.extend(rollout_outputs["prompt_ids"])
+            # First turn: store the full prompt
+            prompt_ids.extend(new_prompt_ids)
+            prev_total_len = len(new_prompt_ids)
         else:
-            # Later turns: the new prompt tokens (env feedback + conversation
-            # context) become part of the completion sequence with zeroed-out
-            # logprobs — env tokens aren't model-generated.
-            env_feedback_ids = rollout_outputs["prompt_ids"]
-            completion_ids.extend(env_feedback_ids)
-            logprobs.extend([0.0] * len(env_feedback_ids))
+            # Later turns: only append the delta (new env feedback tokens
+            # beyond what we've already tracked). These get zeroed-out
+            # logprobs since they're env-generated, not model-generated.
+            delta_ids = new_prompt_ids[prev_total_len:]
+            completion_ids.extend(delta_ids)
+            logprobs.extend([0.0] * len(delta_ids))
 
         # Append the model's generation tokens (these get real logprobs)
         completion_ids.extend(rollout_outputs["completion_ids"])
         logprobs.extend(rollout_outputs["logprobs"])
+
+        # Update running total: everything up to and including this turn's completion
+        prev_total_len = len(new_prompt_ids) + len(rollout_outputs["completion_ids"])
 
         completion_text = rollout_outputs.get("text") or tokenizer.decode(
             rollout_outputs["completion_ids"], skip_special_tokens=True,
@@ -251,12 +264,17 @@ def rollout_func(prompts: list[str], trainer: GRPOTrainer) -> dict[str, list]:
 
 
 def _extract_seed(prompt_text: str) -> int:
-    """Extract the env seed from a prompt like 'seed:42 ...'"""
+    """Extract the env seed from a prompt like 'seed:42 ...'
+
+    Crashes loudly on malformed prompts rather than silently producing
+    non-deterministic seeds (Python's hash() is randomized across processes).
+    """
     match = re.match(r"seed:(\d+)", prompt_text)
     if match:
         return int(match.group(1))
-    # Fallback: hash the prompt to get a deterministic seed
-    return hash(prompt_text) % (2**31)
+    # Deterministic fallback using SHA-256 (stable across processes, unlike hash())
+    digest = hashlib.sha256(prompt_text.encode()).hexdigest()
+    return int(digest[:8], 16) % (2**31)
 
 
 def reward_from_env(completions, **kwargs):
