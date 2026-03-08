@@ -42,8 +42,7 @@ class SkillInvocationAction(Action):
     answer: Optional[str] = Field(
         default=None, 
         description='Solution text (required for submit)', 
-        max_length=100000,
-        json_schema_extra={"type": "string"}
+        json_schema_extra={"type": "string", "maxLength": 100000}
     )
 
 
