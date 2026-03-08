@@ -19,7 +19,7 @@ app = create_app(
     SkillInvocationAction,
     SkillInvocationObservation,
     env_name="skill_invocation_env",
-    max_concurrent_envs=4,
+    max_concurrent_envs=32,
 )
 
 
