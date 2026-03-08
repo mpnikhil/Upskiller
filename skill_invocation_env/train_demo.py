@@ -381,6 +381,7 @@ if __name__ == "__main__":
         save_steps=50,
         loss_type="grpo",
         report_to="wandb",
+        temperature=0.7,
     )
 
     peft_config = LoraConfig(
