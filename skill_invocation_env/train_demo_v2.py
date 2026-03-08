@@ -24,13 +24,13 @@ from skill_invocation_env.client import SkillInvocationEnv
 from skill_invocation_env.models import SkillInvocationAction
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-MODEL_ID = os.getenv("MODEL_ID", "Qwen/Qwen3-8B")
+MODEL_ID = os.getenv("MODEL_ID", "Qwen/Qwen3-4B")
 ENV_URL = os.getenv("ENV_URL", "https://mpnikhil-skill-invocation-env.hf.space")
 HF_TOKEN = os.getenv("HF_TOKEN")
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", "./outputs/qwen-skill-env-v2")
 HUB_REPO = os.getenv("HUB_REPO", "mpnikhil/Qwen2.5-3B-Skill-Invocation")
 NUM_EPISODES = int(os.getenv("NUM_EPISODES", "32"))
-NUM_GENERATIONS = int(os.getenv("NUM_GENERATIONS", "16"))
+NUM_GENERATIONS = int(os.getenv("NUM_GENERATIONS", "8"))
 MAX_COMPLETION_LENGTH = int(os.getenv("MAX_COMPLETION_LENGTH", "4096"))
 
 SYSTEM_PROMPT = """\
@@ -213,7 +213,7 @@ if __name__ == "__main__":
         num_generations=NUM_GENERATIONS,
         max_completion_length=MAX_COMPLETION_LENGTH,
         per_device_train_batch_size=1,
-        generation_batch_size=16,
+        generation_batch_size=8,
         gradient_accumulation_steps=2,
         learning_rate=5e-6,
         max_tool_calling_iterations=8,
@@ -237,22 +237,8 @@ if __name__ == "__main__":
         lora_dropout=0.0,
     )
 
-    from transformers import AutoModelForCausalLM
-
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL_ID,
-        device_map="auto",
-        dtype="float32",
-        quantization_config=BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.float16,
-            bnb_4bit_use_double_quant=True,
-        ),
-    )
-
     trainer = GRPOTrainer(
-        model=model,
+        model=MODEL_ID,
         reward_funcs=reward_func,
         train_dataset=dataset,
         args=training_args,
