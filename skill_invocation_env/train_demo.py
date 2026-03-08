@@ -118,7 +118,7 @@ class SkillEnv:
             skill_id: The ID of the skill to load (e.g. 'skill_01')
 
         Returns:
-            Updated environment state with the loaded skill content.
+            The loaded skill content.
         """
         if self.done:
             self.reward = -1.0
@@ -127,7 +127,10 @@ class SkillEnv:
         result = self.client.step(action)
         self.done = result.done
         self.reward = float(result.reward or 0.0)
-        return format_observation(result.observation)
+        obs = result.observation
+        # Return only the new skill content, not the full observation
+        content = obs.skill_content or "No content returned."
+        return f"[{skill_id}] loaded (budget: {obs.context_budget_used}/{obs.context_budget_total}):\n{content}"
 
     def unload_skill(self, skill_id: str) -> str:
         """Unload a skill to free context budget.
@@ -136,7 +139,7 @@ class SkillEnv:
             skill_id: The ID of the skill to unload (e.g. 'skill_01')
 
         Returns:
-            Updated environment state after unloading.
+            Confirmation of unload.
         """
         if self.done:
             self.reward = -1.0
@@ -145,7 +148,8 @@ class SkillEnv:
         result = self.client.step(action)
         self.done = result.done
         self.reward = float(result.reward or 0.0)
-        return format_observation(result.observation)
+        obs = result.observation
+        return f"Unloaded {skill_id}. Budget: {obs.context_budget_used}/{obs.context_budget_total}"
 
     def submit(self, answer: str) -> str:
         """Submit your final solution to the task.
