@@ -264,12 +264,18 @@ def rollout_func(prompts: list[str], trainer: GRPOTrainer) -> dict[str, list]:
         seed = _extract_seed(prompt_text)
 
         env = SkillInvocationEnv(base_url=ENV_URL, connect_timeout_s=60)
-        episode = rollout_once(
-            trainer=trainer,
-            env=env,
-            tokenizer=tokenizer,
-            env_seed=seed,
-        )
+        try:
+            episode = rollout_once(
+                trainer=trainer,
+                env=env,
+                tokenizer=tokenizer,
+                env_seed=seed,
+            )
+        finally:
+            try:
+                env.close()
+            except Exception:
+                pass
         all_prompt_ids.append(episode["prompt_ids"])
         all_completion_ids.append(episode["completion_ids"])
         all_logprobs.append(episode["logprobs"])
