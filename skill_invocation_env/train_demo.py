@@ -127,48 +127,59 @@ def rollout_once(
     """
     Run one multi-turn episode against the Skill Invocation Environment.
 
-    Follows the TRL wordle.py pattern: fresh prompt each turn with full state
-    in the observation, extend prompt_ids/completion_ids/logprobs every turn.
-    No env feedback tokens — only model-generated tokens with real logprobs.
+    Plays all turns (load/unload/submit) using a growing conversation history,
+    but only trains on the LAST turn's tokens. This ensures prompt_ids +
+    completion_ids form a valid causal sequence for GRPO's forward pass.
+    The reward reflects the full episode, so the model learns to submit well
+    given the skills it loaded.
     """
     result = env.reset(seed=env_seed)
     obs = result.observation
 
-    prompt_ids: list[int] = []
-    completion_ids: list[int] = []
-    logprobs: list[float] = []
     env_reward = 0.0
     generated_any = False
+
+    # Growing conversation so the model remembers previous actions
+    conversation = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    # Track last turn's outputs for training
+    last_prompt_ids: list[int] = []
+    last_completion_ids: list[int] = []
+    last_logprobs: list[float] = []
 
     for turn in range(MAX_TURNS):
         if result.done:
             break
 
-        # Fresh 2-message prompt each turn (wordle.py pattern).
-        # format_observation includes full state: task, catalog, loaded skills,
-        # loaded contents, verification result, status messages.
         user_content = format_observation(obs)
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ]
+        conversation.append({"role": "user", "content": user_content})
 
         prompt_text = tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, tokenize=False,
+            conversation, add_generation_prompt=True, tokenize=False,
         )
+
+        # Safety check: prevent vLLM context length errors
+        prompt_token_count = len(tokenizer.encode(prompt_text, add_special_tokens=False))
+        if prompt_token_count > 31_000:
+            print(f"    [rollout] prompt too long ({prompt_token_count} tokens), breaking early")
+            env_reward = -0.5
+            break
 
         # Generate using TRL's vLLM helper
         rollout_outputs = generate_rollout_completions(trainer, [prompt_text])[0]
         generated_any = True
 
-        # Accumulate across turns — extend all three lists every turn
-        prompt_ids.extend(rollout_outputs["prompt_ids"])
-        completion_ids.extend(rollout_outputs["completion_ids"])
-        logprobs.extend(rollout_outputs["logprobs"])
+        # Overwrite — only keep the last turn's tokens for training
+        last_prompt_ids = rollout_outputs["prompt_ids"]
+        last_completion_ids = rollout_outputs["completion_ids"]
+        last_logprobs = rollout_outputs["logprobs"]
 
         completion_text = rollout_outputs.get("text") or tokenizer.decode(
             rollout_outputs["completion_ids"], skip_special_tokens=True,
         )
+
+        # Add model response to conversation history for next turn's context
+        conversation.append({"role": "assistant", "content": completion_text})
 
         # Parse action and step the environment
         action = parse_action(completion_text)
@@ -190,14 +201,14 @@ def rollout_once(
     # Fallback if no generation happened (e.g. env.reset() returned done=True)
     if not generated_any:
         dummy_ids = tokenizer.encode("error", add_special_tokens=False)
-        prompt_ids = dummy_ids
-        completion_ids = list(dummy_ids)
-        logprobs = [0.0] * len(dummy_ids)
+        last_prompt_ids = dummy_ids
+        last_completion_ids = list(dummy_ids)
+        last_logprobs = [0.0] * len(dummy_ids)
 
     return {
-        "prompt_ids": prompt_ids,
-        "completion_ids": completion_ids,
-        "logprobs": logprobs,
+        "prompt_ids": last_prompt_ids,
+        "completion_ids": last_completion_ids,
+        "logprobs": last_logprobs,
         "env_reward": env_reward,
     }
 
